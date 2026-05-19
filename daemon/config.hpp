@@ -23,6 +23,35 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
+
+/*
+ * Multi-rate Stage 1: a DeviceGroup describes one ALSA PCM device exposed by
+ * the kernel module (hw:RAVENNA,id). PCM 0 is created at module probe; the
+ * daemon issues MT_ALSA_Msg_AddPCM for any additional groups at startup.
+ * Stage 1 keeps a shared sample_rate across groups (the top-level
+ * Config::sample_rate_ field). Stage 2 will move sample_rate onto each
+ * DeviceGroup. If `device_groups` is absent from daemon.conf, a synthetic
+ * group {id:0} is created from the legacy top-level fields so old configs
+ * keep working unchanged.
+ */
+struct DeviceGroup {
+  uint8_t id{0};
+  uint32_t num_inputs{0};
+  uint32_t num_outputs{0};
+  int32_t playout_delay{0};
+  int32_t capture_delay{0};
+
+  friend bool operator==(const DeviceGroup& a, const DeviceGroup& b) {
+    return a.id == b.id && a.num_inputs == b.num_inputs &&
+           a.num_outputs == b.num_outputs &&
+           a.playout_delay == b.playout_delay &&
+           a.capture_delay == b.capture_delay;
+  }
+  friend bool operator!=(const DeviceGroup& a, const DeviceGroup& b) {
+    return !(a == b);
+  }
+};
 
 class Config {
  public:
@@ -73,6 +102,13 @@ class Config {
   const std::string& get_custom_node_id() const { return custom_node_id_; };
   std::string get_node_id() const;
   bool get_auto_sinks_update() const { return auto_sinks_update_; };
+
+  const std::vector<DeviceGroup>& get_device_groups() const {
+    return device_groups_;
+  };
+  void set_device_groups(std::vector<DeviceGroup> groups) {
+    device_groups_ = std::move(groups);
+  };
 
   /* attributes set during init */
   const std::array<uint8_t, 6>& get_mac_addr() const { return mac_addr_; };
@@ -202,7 +238,8 @@ class Config {
            lhs.get_interface_name() != rhs.get_interface_name() ||
            lhs.get_mdns_enabled() != rhs.get_mdns_enabled() ||
            lhs.get_auto_sinks_update() != rhs.get_auto_sinks_update() ||
-           lhs.get_custom_node_id() != rhs.get_custom_node_id();
+           lhs.get_custom_node_id() != rhs.get_custom_node_id() ||
+           lhs.get_device_groups() != rhs.get_device_groups();
   };
   friend bool operator==(const Config& lhs, const Config& rhs) {
     return !(lhs != rhs);
@@ -242,6 +279,9 @@ class Config {
   std::string custom_node_id_;
   std::string node_id_;
   bool auto_sinks_update_{true};
+  /* multi-rate Stage 1: optional list of PCM device groups. Synthesised
+   * with a single {id:0} entry if absent (legacy single-PCM behaviour). */
+  std::vector<DeviceGroup> device_groups_;
 
   /* set during init */
   std::array<uint8_t, 6> mac_addr_{0, 0, 0, 0, 0, 0};

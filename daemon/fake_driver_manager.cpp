@@ -46,12 +46,20 @@ bool DriverManager::init(const Config& config) {
 
   bool res(false);
   if (config.get_driver_restart()) {
-    res = start() || reset() ||
+    res = start() || reset(0) ||
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
-          set_playout_delay(config.get_playout_delay()) ||
           set_max_tic_frame_size(config.get_max_tic_frame_size());
+    if (!res) {
+      for (const auto& g : config.get_device_groups()) {
+        if (g.id > 0) {
+          (void)add_pcm(g.id, config.get_sample_rate(),
+                        g.num_inputs, g.num_outputs);
+        }
+        (void)set_playout_delay(g.id, g.playout_delay);
+      }
+    }
   }
 
   return !res;
@@ -81,7 +89,7 @@ std::error_code DriverManager::stop() {
   return std::error_code{};
 }
 
-std::error_code DriverManager::reset() {
+std::error_code DriverManager::reset(uint8_t /*pcm_id*/) {
   return std::error_code{};
 }
 
@@ -117,14 +125,24 @@ std::error_code DriverManager::set_interface_name(const std::string& ifname) {
   return std::error_code{};
 }
 
+std::error_code DriverManager::add_pcm(uint8_t pcm_id,
+                                       uint32_t /*sample_rate*/,
+                                       uint32_t /*num_inputs*/,
+                                       uint32_t /*num_outputs*/) {
+  BOOST_LOG_TRIVIAL(info) << "fake_driver_manager:: add PCM id="
+                          << (int)pcm_id;
+  return std::error_code{};
+}
+
 std::error_code DriverManager::add_rtp_stream(
+    uint8_t pcm_id,
     const TRTP_stream_info& stream_info,
     uint64_t& stream_handle) {
   stream_handle = ++g_handle;
   handles_.insert(stream_handle);
   BOOST_LOG_TRIVIAL(info)
-      << "fake_driver_manager:: add RTP stream success handle "
-      << stream_handle;
+      << "fake_driver_manager:: add RTP stream pcm_id=" << (int)pcm_id
+      << " success handle " << stream_handle;
   return std::error_code{};
 }
 
@@ -166,7 +184,8 @@ std::error_code DriverManager::set_max_tic_frame_size(uint64_t frame_size) {
   return std::error_code{};
 }
 
-std::error_code DriverManager::set_playout_delay(int32_t delay) {
+std::error_code DriverManager::set_playout_delay(uint8_t /*pcm_id*/,
+                                                 int32_t delay) {
   delay_ = delay;
   return std::error_code{};
 }
@@ -178,12 +197,14 @@ std::error_code DriverManager::get_sample_rate(uint32_t& sample_rate) {
   return std::error_code{};
 }
 
-std::error_code DriverManager::get_number_of_inputs(int32_t& inputs) {
+std::error_code DriverManager::get_number_of_inputs(uint8_t /*pcm_id*/,
+                                                    int32_t& inputs) {
   inputs = 0;
   return std::error_code{};
 }
 
-std::error_code DriverManager::get_number_of_outputs(int32_t& outputs) {
+std::error_code DriverManager::get_number_of_outputs(uint8_t /*pcm_id*/,
+                                                     int32_t& outputs) {
   outputs = 0;
   return std::error_code{};
 }

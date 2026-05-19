@@ -40,7 +40,15 @@ class DriverManager : public DriverHandler {
   std::error_code get_ptp_config(TPTPConfig& config);
   std::error_code get_ptp_status(TPTPStatus& status);
   std::error_code set_interface_name(const std::string& ifname);
-  std::error_code add_rtp_stream(const TRTP_stream_info& stream_info,
+  /* multi-rate Stage 1: per-PCM methods now take a pcm_id (group_id).
+   * add_pcm() asks the kernel to instantiate hw:RAVENNA,pcm_id; pcm_id 0
+   * is created automatically at module probe and must not be re-added. */
+  std::error_code add_pcm(uint8_t pcm_id,
+                          uint32_t sample_rate,
+                          uint32_t num_inputs,
+                          uint32_t num_outputs);
+  std::error_code add_rtp_stream(uint8_t pcm_id,
+                                 const TRTP_stream_info& stream_info,
                                  uint64_t& stream_handle);
   std::error_code get_rtp_stream_status(uint64_t stream_handle,
                                         TRTP_stream_status& stream_status);
@@ -49,9 +57,9 @@ class DriverManager : public DriverHandler {
   std::error_code set_sample_rate(uint32_t sample_rate);
   std::error_code set_tic_frame_size_at_1fs(uint64_t frame_size);
   std::error_code set_max_tic_frame_size(uint64_t frame_size);
-  std::error_code set_playout_delay(int32_t delay);
-  std::error_code get_number_of_inputs(int32_t& inputs);
-  std::error_code get_number_of_outputs(int32_t& outputs);
+  std::error_code set_playout_delay(uint8_t pcm_id, int32_t delay);
+  std::error_code get_number_of_inputs(uint8_t pcm_id, int32_t& inputs);
+  std::error_code get_number_of_outputs(uint8_t pcm_id, int32_t& outputs);
 
   int32_t get_current_output_volume() const { return output_volume_; };
   int32_t get_current_output_switch() const { return output_switch_; };
@@ -65,7 +73,7 @@ class DriverManager : public DriverHandler {
   std::error_code hello();
   std::error_code start();
   std::error_code stop();
-  std::error_code reset();
+  std::error_code reset(uint8_t pcm_id);
   std::error_code bye();
 
   void on_command_done(enum MT_ALSA_msg_id id,

@@ -54,7 +54,9 @@ static const std::vector<std::string> alsa_msg_str = {"Start",
                                                       "GetRTPStreamStatus",
                                                       "SetPTPConfig",
                                                       "GetPTPConfig",
-                                                      "GetPTPStatus"};
+                                                      "GetPTPStatus",
+                                                      "AddPCM",
+                                                      "RemovePCM"};
 
 static const std::vector<std::string> ptp_status_str = {"unlocked", "locking",
                                                         "locked"};
@@ -86,12 +88,32 @@ bool DriverManager::init(const Config& config) {
 
   bool res(false);
   if (config.get_driver_restart()) {
-    res = start() || reset() ||
+    res = start() || reset(0) ||
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
-          set_playout_delay(config.get_playout_delay()) ||
           set_max_tic_frame_size(config.get_max_tic_frame_size());
+    /* multi-rate Stage 1: PCM 0 already exists (created at module probe).
+     * Issue AddPCM for groups 1..N-1, then push each group's playout_delay. */
+    if (!res) {
+      for (const auto& g : config.get_device_groups()) {
+        if (g.id > 0) {
+          if (auto ec = add_pcm(g.id, config.get_sample_rate(),
+                                g.num_inputs, g.num_outputs)) {
+            BOOST_LOG_TRIVIAL(fatal)
+                << "driver_manager:: add_pcm id=" << (int)g.id
+                << " failed: " << ec.message();
+            res = true;
+            break;
+          }
+        }
+        if (auto ec = set_playout_delay(g.id, g.playout_delay)) {
+          BOOST_LOG_TRIVIAL(warning)
+              << "driver_manager:: set_playout_delay id=" << (int)g.id
+              << " failed: " << ec.message();
+        }
+      }
+    }
   }
 
   return !res;
@@ -125,8 +147,13 @@ std::error_code DriverManager::stop() {
   return retcode_;
 }
 
-std::error_code DriverManager::reset() {
-  this->send_command(MT_ALSA_Msg_Reset, 0, nullptr);
+std::error_code DriverManager::reset(uint8_t pcm_id) {
+  /* Payload (multi-rate Stage 1+): int32_t pcm_id. The kernel still
+   * removes all RTP streams regardless of pcm_id (streams aren't tagged
+   * yet on the kernel side — see manager.c MT_ALSA_Msg_Reset handler). */
+  int32_t id = pcm_id;
+  this->send_command(MT_ALSA_Msg_Reset, sizeof(id),
+                     reinterpret_cast<const uint8_t*>(&id));
   return retcode_;
 }
 
@@ -169,15 +196,43 @@ std::error_code DriverManager::set_interface_name(const std::string& ifname) {
   return retcode_;
 }
 
+std::error_code DriverManager::add_pcm(uint8_t pcm_id,
+                                       uint32_t sample_rate,
+                                       uint32_t num_inputs,
+                                       uint32_t num_outputs) {
+  /* Stage 1: sample_rate must equal the manager-wide rate. We send it
+   * anyway for forward-compat with Stage 2; the kernel validates. */
+  struct MT_ALSA_AddPCM_args args;
+  args.pcm_id = pcm_id;
+  args.sample_rate = sample_rate;
+  args.num_inputs = num_inputs;
+  args.num_outputs = num_outputs;
+  BOOST_LOG_TRIVIAL(info) << "driver_manager:: add PCM id=" << (int)pcm_id
+                          << " rate=" << sample_rate << " in=" << num_inputs
+                          << " out=" << num_outputs;
+  this->send_command(MT_ALSA_Msg_AddPCM, sizeof(args),
+                     reinterpret_cast<const uint8_t*>(&args));
+  return retcode_;
+}
+
 std::error_code DriverManager::add_rtp_stream(
+    uint8_t pcm_id,
     const TRTP_stream_info& stream_info,
     uint64_t& stream_handle) {
-  this->send_command(MT_ALSA_Msg_Add_RTPStream, sizeof(TRTP_stream_info),
-                     reinterpret_cast<const uint8_t*>(&stream_info));
+  /* Payload (multi-rate Stage 1+): {int32_t pcm_id, TRTP_stream_info}.
+   * pcm_id duplicates stream_info.m_uiPCMId at the wire level so the
+   * kernel can route before parsing the stream struct; callers should
+   * keep the two in sync (session_manager does this in add_source/sink). */
+  uint8_t buf[sizeof(int32_t) + sizeof(TRTP_stream_info)];
+  int32_t id = pcm_id;
+  memcpy(buf, &id, sizeof(id));
+  memcpy(buf + sizeof(id), &stream_info, sizeof(stream_info));
+  this->send_command(MT_ALSA_Msg_Add_RTPStream, sizeof(buf), buf);
   if (!retcode_) {
     memcpy(&stream_handle, recv_data_, sizeof(stream_handle));
     BOOST_LOG_TRIVIAL(info)
-        << "driver_manager:: add RTP stream success handle " << stream_handle;
+        << "driver_manager:: add RTP stream pcm_id=" << (int)pcm_id
+        << " success handle " << stream_handle;
   }
   return retcode_;
 }
@@ -222,9 +277,11 @@ std::error_code DriverManager::set_max_tic_frame_size(uint64_t frame_size) {
   return retcode_;
 }
 
-std::error_code DriverManager::set_playout_delay(int32_t delay) {
-  this->send_command(MT_ALSA_Msg_SetPlayoutDelay, sizeof(uint32_t),
-                     reinterpret_cast<const uint8_t*>(&delay));
+std::error_code DriverManager::set_playout_delay(uint8_t pcm_id, int32_t delay) {
+  /* Payload: {int32_t pcm_id, int32_t delay_in_samples}. */
+  int32_t buf[2] = { pcm_id, delay };
+  this->send_command(MT_ALSA_Msg_SetPlayoutDelay, sizeof(buf),
+                     reinterpret_cast<const uint8_t*>(buf));
   return retcode_;
 }
 
@@ -237,20 +294,29 @@ std::error_code DriverManager::get_sample_rate(uint32_t& sample_rate) {
   return retcode_;
 }
 
-std::error_code DriverManager::get_number_of_inputs(int32_t& inputs) {
-  this->send_command(MT_ALSA_Msg_GetNumberOfInputs);
+std::error_code DriverManager::get_number_of_inputs(uint8_t pcm_id,
+                                                    int32_t& inputs) {
+  /* Payload: int32_t pcm_id. Reply: uint32_t count. */
+  int32_t id = pcm_id;
+  this->send_command(MT_ALSA_Msg_GetNumberOfInputs, sizeof(id),
+                     reinterpret_cast<const uint8_t*>(&id));
   if (!retcode_) {
     memcpy(&inputs, recv_data_, sizeof(uint32_t));
-    BOOST_LOG_TRIVIAL(info) << "driver_manager:: number of inputs " << inputs;
+    BOOST_LOG_TRIVIAL(info) << "driver_manager:: number of inputs pcm_id="
+                            << (int)pcm_id << " = " << inputs;
   }
   return retcode_;
 }
 
-std::error_code DriverManager::get_number_of_outputs(int32_t& outputs) {
-  this->send_command(MT_ALSA_Msg_GetNumberOfOutputs);
+std::error_code DriverManager::get_number_of_outputs(uint8_t pcm_id,
+                                                     int32_t& outputs) {
+  int32_t id = pcm_id;
+  this->send_command(MT_ALSA_Msg_GetNumberOfOutputs, sizeof(id),
+                     reinterpret_cast<const uint8_t*>(&id));
   if (!retcode_) {
     memcpy(&outputs, recv_data_, sizeof(uint32_t));
-    BOOST_LOG_TRIVIAL(info) << "driver_manager:: number of outputs " << outputs;
+    BOOST_LOG_TRIVIAL(info) << "driver_manager:: number of outputs pcm_id="
+                            << (int)pcm_id << " = " << outputs;
   }
   return retcode_;
 }
