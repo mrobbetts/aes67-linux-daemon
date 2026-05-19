@@ -80,6 +80,19 @@ std::shared_ptr<Config> Config::parse(const std::string& filename,
       config.streamer_player_buffer_files_num_ > 2)
     config.streamer_player_buffer_files_num_ = 1;
 
+  /* multi-rate Stage 1: if device_groups is absent (legacy config),
+   * synthesise a single group {id:0} from the top-level fields so the
+   * rest of the daemon has a uniform device_groups view to work with. */
+  if (config.device_groups_.empty()) {
+    DeviceGroup g;
+    g.id = 0;
+    g.num_inputs = 0;
+    g.num_outputs = 0;
+    g.playout_delay = static_cast<int32_t>(config.playout_delay_);
+    g.capture_delay = 0;
+    config.device_groups_.push_back(g);
+  }
+
   boost::system::error_code ec;
 #if BOOST_VERSION < 108700
   ip::address_v4::from_string(config.rtp_mcast_base_.c_str(), ec);
@@ -156,7 +169,8 @@ bool Config::save(const Config& config) {
     driver_restart_ =
         get_tic_frame_size_at_1fs() != config.get_tic_frame_size_at_1fs() ||
         get_max_tic_frame_size() != config.get_max_tic_frame_size() ||
-        get_interface_name() != config.get_interface_name();
+        get_interface_name() != config.get_interface_name() ||
+        get_device_groups() != config.get_device_groups();
 
     daemon_restart_ =
         driver_restart_ || get_http_port() != config.get_http_port() ||

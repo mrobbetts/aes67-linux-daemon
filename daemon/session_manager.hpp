@@ -46,6 +46,10 @@ struct StreamSource {
   uint8_t dscp{0};
   bool refclk_ptp_traceable{false};
   std::vector<uint8_t> map;
+  /* multi-rate Stage 1: which PCM (hw:RAVENNA,pcm) this source draws from.
+   * Defaults to 0 (the default PCM), so legacy single-PCM configs work
+   * unchanged. JSON field "pcm" is optional and defaults to 0. */
+  uint8_t pcm{0};
 };
 
 struct StreamSink {
@@ -58,6 +62,8 @@ struct StreamSink {
   uint32_t delay{0};
   bool ignore_refclk_gmid{false};
   std::vector<uint8_t> map;
+  /* multi-rate Stage 1: which PCM (hw:RAVENNA,pcm) this sink writes into. */
+  uint8_t pcm{0};
 };
 
 struct SinkStreamStatus {

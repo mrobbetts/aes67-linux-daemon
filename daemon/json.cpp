@@ -120,7 +120,27 @@ std::string config_to_json(const Config& config) {
      << ",\n  \"streamer_enabled\": " << std::boolalpha
      << config.get_streamer_enabled()
      << ",\n  \"auto_sinks_update\": " << std::boolalpha
-     << config.get_auto_sinks_update() << "\n}\n";
+     << config.get_auto_sinks_update()
+     << ",\n  \"device_groups\": [";
+  {
+    const auto& groups = config.get_device_groups();
+    bool first = true;
+    for (const auto& g : groups) {
+      if (!first)
+        ss << ",";
+      first = false;
+      ss << "\n    {"
+         << "\n      \"id\": " << unsigned(g.id)
+         << ",\n      \"num_inputs\": " << g.num_inputs
+         << ",\n      \"num_outputs\": " << g.num_outputs
+         << ",\n      \"playout_delay\": " << g.playout_delay
+         << ",\n      \"capture_delay\": " << g.capture_delay
+         << "\n    }";
+    }
+    if (!groups.empty())
+      ss << "\n  ";
+  }
+  ss << "]\n}\n";
   return ss.str();
 }
 
@@ -137,7 +157,9 @@ std::string source_to_json(const StreamSource& source) {
      << ",\n    \"payload_type\": " << unsigned(source.payload_type)
      << ",\n    \"dscp\": " << +unsigned(source.dscp)
      << ",\n    \"refclk_ptp_traceable\": " << std::boolalpha
-     << source.refclk_ptp_traceable << ",\n    \"map\": [ ";
+     << source.refclk_ptp_traceable
+     << ",\n    \"pcm\": " << unsigned(source.pcm)
+     << ",\n    \"map\": [ ";
   int i = 0;
   for (int value : source.map) {
     if (i++ > 0)
@@ -158,7 +180,9 @@ std::string sink_to_json(const StreamSink& sink) {
      << ",\n    \"sdp\": \"" << escape_json(sink.sdp) << "\""
      << ",\n    \"delay\": " << sink.delay
      << ",\n    \"ignore_refclk_gmid\": " << std::boolalpha
-     << sink.ignore_refclk_gmid << ",\n    \"map\": [ ";
+     << sink.ignore_refclk_gmid
+     << ",\n    \"pcm\": " << unsigned(sink.pcm)
+     << ",\n    \"map\": [ ";
   int i = 0;
   for (int value : sink.map) {
     if (i++ > 0)
@@ -369,6 +393,23 @@ Config json_to_config_(std::istream& js, Config& config) {
             remove_undesired_chars(val.get_value<std::string>()));
       } else if (key == "auto_sinks_update") {
         config.set_auto_sinks_update(val.get_value<bool>());
+      } else if (key == "device_groups") {
+        /* multi-rate Stage 1: optional array of PCM device groups.
+         * Each entry: {id, num_inputs, num_outputs, playout_delay?,
+         * capture_delay?}. Group 0 is the default PCM created at probe;
+         * groups 1..N-1 are added via MT_ALSA_Msg_AddPCM at daemon init. */
+        std::vector<DeviceGroup> groups;
+        for (auto const& [k, gval] : val) {
+          (void)k;  // array elements have empty keys
+          DeviceGroup g;
+          g.id = gval.get<uint8_t>("id");
+          g.num_inputs = gval.get<uint32_t>("num_inputs", 0);
+          g.num_outputs = gval.get<uint32_t>("num_outputs", 0);
+          g.playout_delay = gval.get<int32_t>("playout_delay", 0);
+          g.capture_delay = gval.get<int32_t>("capture_delay", 0);
+          groups.push_back(g);
+        }
+        config.set_device_groups(std::move(groups));
       } else if (key == "ip_addr") {
         config.set_ip_addr_str(val.get_value<std::string>());
       } else if (key == "mac_addr" || key == "node_id") {
@@ -450,6 +491,8 @@ StreamSource json_to_source(const std::string& id, const std::string& json) {
     source.payload_type = pt.get<uint8_t>("payload_type");
     source.dscp = pt.get<uint8_t>("dscp");
     source.refclk_ptp_traceable = pt.get<bool>("refclk_ptp_traceable");
+    /* multi-rate Stage 1: optional, defaults to PCM 0 for back-compat. */
+    source.pcm = pt.get<uint8_t>("pcm", 0);
   } catch (boost::property_tree::json_parser::json_parser_error& je) {
     throw std::runtime_error("error parsing JSON at line " +
                              std::to_string(je.line()) + " :" + je.message());
@@ -490,6 +533,8 @@ StreamSink json_to_sink(const std::string& id, const std::string& json) {
     sink.sdp = remove_undesired_chars(pt.get<std::string>("sdp"));
     sink.delay = pt.get<uint32_t>("delay");
     sink.ignore_refclk_gmid = pt.get<bool>("ignore_refclk_gmid");
+    /* multi-rate Stage 1: optional, defaults to PCM 0 for back-compat. */
+    sink.pcm = pt.get<uint8_t>("pcm", 0);
     /* source map determite the association with
        ALSA input channels used to recording */
     BOOST_FOREACH (boost::property_tree::ptree::value_type& v,
@@ -549,6 +594,7 @@ static void parse_json_sources(boost::property_tree::ptree& pt,
     source.payload_type = v.second.get<uint8_t>("payload_type");
     source.dscp = v.second.get<uint8_t>("dscp");
     source.refclk_ptp_traceable = v.second.get<bool>("refclk_ptp_traceable");
+    source.pcm = v.second.get<uint8_t>("pcm", 0);
     /* source map determite the association with
        ALSA output channels used to playing */
     BOOST_FOREACH (const boost::property_tree::ptree::value_type& vm,
@@ -587,6 +633,7 @@ static void parse_json_sinks(boost::property_tree::ptree& pt,
     sink.sdp = v.second.get<std::string>("sdp");
     sink.delay = v.second.get<uint32_t>("delay");
     sink.ignore_refclk_gmid = v.second.get<bool>("ignore_refclk_gmid");
+    sink.pcm = v.second.get<uint8_t>("pcm", 0);
     /* source map determite the association with
        ALSA input channels used to recording */
     BOOST_FOREACH (const boost::property_tree::ptree::value_type& vm,
