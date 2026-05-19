@@ -92,10 +92,22 @@ bool DriverManager::init(const Config& config) {
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
-          set_max_tic_frame_size(config.get_max_tic_frame_size());
+          set_max_tic_frame_size(config.get_max_tic_frame_size()) ||
+          /* multi-rate Stage 1: the kernel module boots with
+           * m_SampleRate = DEFAULT_SAMPLERATE (44100). We need to push the
+           * configured rate before issuing AddPCM, because the AddPCM
+           * handler refuses any rate that doesn't match m_SampleRate.
+           * Without this, a typical config (sample_rate: 48000) plus any
+           * device_group with id > 0 would fail to boot. */
+          set_sample_rate(config.get_sample_rate());
     /* multi-rate Stage 1: PCM 0 already exists (created at module probe).
-     * Issue AddPCM for groups 1..N-1, then push each group's playout_delay. */
+     * Issue AddPCM for groups 1..N-1. playout_delay is currently stored
+     * manager-wide in the kernel, so we only push it once (from group 0)
+     * to make the "shared delay" Stage 1 limitation visible — any
+     * per-group delay other than group 0's is logged but not applied. */
     if (!res) {
+      int32_t shared_playout_delay = 0;
+      bool have_shared_delay = false;
       for (const auto& g : config.get_device_groups()) {
         if (g.id > 0) {
           if (auto ec = add_pcm(g.id, config.get_sample_rate(),
@@ -107,10 +119,21 @@ bool DriverManager::init(const Config& config) {
             break;
           }
         }
-        if (auto ec = set_playout_delay(g.id, g.playout_delay)) {
+        if (g.id == 0) {
+          shared_playout_delay = g.playout_delay;
+          have_shared_delay = true;
+        } else if (g.playout_delay != 0) {
           BOOST_LOG_TRIVIAL(warning)
-              << "driver_manager:: set_playout_delay id=" << (int)g.id
-              << " failed: " << ec.message();
+              << "driver_manager:: per-group playout_delay not supported "
+                 "in Stage 1; ignoring playout_delay=" << g.playout_delay
+              << " on device_group id=" << (int)g.id
+              << " (only id=0's playout_delay is applied)";
+        }
+      }
+      if (!res && have_shared_delay) {
+        if (auto ec = set_playout_delay(0, shared_playout_delay)) {
+          BOOST_LOG_TRIVIAL(warning)
+              << "driver_manager:: set_playout_delay failed: " << ec.message();
         }
       }
     }
@@ -148,9 +171,10 @@ std::error_code DriverManager::stop() {
 }
 
 std::error_code DriverManager::reset(uint8_t pcm_id) {
-  /* Payload (multi-rate Stage 1+): int32_t pcm_id. The kernel still
-   * removes all RTP streams regardless of pcm_id (streams aren't tagged
-   * yet on the kernel side — see manager.c MT_ALSA_Msg_Reset handler). */
+  /* Payload (multi-rate Stage 1+): int32_t pcm_id. Streams ARE tagged
+   * with m_uiPCMId, but the kernel-side reset handler currently still
+   * removes all streams regardless of pcm_id — per-pcm_id reset is a
+   * Stage 2/3 follow-up. See manager.c MT_ALSA_Msg_Reset handler. */
   int32_t id = pcm_id;
   this->send_command(MT_ALSA_Msg_Reset, sizeof(id),
                      reinterpret_cast<const uint8_t*>(&id));
@@ -200,6 +224,18 @@ std::error_code DriverManager::add_pcm(uint8_t pcm_id,
                                        uint32_t sample_rate,
                                        uint32_t num_inputs,
                                        uint32_t num_outputs) {
+  /* Multi-rate Stage 1: bounds-check pcm_id against the kernel's MAX_PCMS
+   * before issuing netlink, so user-visible errors say "id N out of range
+   * [1..7]" rather than the generic errno the kernel returns. Keep this
+   * in sync with MAX_PCMS in 3rdparty/ravenna-alsa-lkm/driver/manager.h. */
+  static constexpr uint8_t kMaxPcmId = 7;  // MAX_PCMS=8 → ids 0..7
+  if (pcm_id == 0 || pcm_id > kMaxPcmId) {
+    BOOST_LOG_TRIVIAL(fatal)
+        << "driver_manager:: add_pcm: pcm_id " << (int)pcm_id
+        << " out of range [1.." << (int)kMaxPcmId
+        << "] (pcm_id 0 is the default PCM, created at module probe)";
+    return std::make_error_code(std::errc::invalid_argument);
+  }
   /* Stage 1: sample_rate must equal the manager-wide rate. We send it
    * anyway for forward-compat with Stage 2; the kernel validates. */
   struct MT_ALSA_AddPCM_args args;
