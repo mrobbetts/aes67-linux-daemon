@@ -565,6 +565,7 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
   info.stream[0].m_ui32SamplingRate =
       driver_->get_current_sample_rate();  // last set from driver or config
   info.stream[0].m_uiId = source.id;
+  info.stream[0].m_uiPCMId = source.pcm;  // multi-rate Stage 1
   info.stream[0].m_ui32RTCPSrcIP = config_->get_ip_addr();
   info.stream[0].m_ui32SrcIP = config_->get_ip_addr();  // only for Source
   bool use_source_address = false;
@@ -660,7 +661,7 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
 
   std::error_code ret;
   if (info.enabled) {
-    ret = driver_->add_rtp_stream(info.stream[0], info.handle[0]);
+    ret = driver_->add_rtp_stream(source.pcm, info.stream[0], info.handle[0]);
     if (ret) {
       if (it != sources_.end()) {
         /* update operation failed */
@@ -692,12 +693,15 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
         info.stream[1].m_uiIfPortId = 1;
         info.stream[1].m_usSrcPort = config_->get_rtp_port_sec();
         info.stream[1].m_usDestPort = config_->get_rtp_port_sec();
+        /* multi-rate Stage 1: ST2022-7 NIC redundancy is orthogonal to
+         * PCM binding — both copies of the stream belong to the same PCM. */
+        info.stream[1].m_uiPCMId = source.pcm;
 
         if (!IN_MULTICAST(info.stream[1].m_ui32DestIP)) {
           /* reuse the MAC address found on interface 0 */
           info.stream[1].m_byTTL = 64;
         }
-        ret = driver_->add_rtp_stream(info.stream[1], info.handle[1]);
+        ret = driver_->add_rtp_stream(source.pcm, info.stream[1], info.handle[1]);
         if (ret) {
           (void)driver_->remove_rtp_stream((*it).second.handle[0]);
           if (it != sources_.end()) {
@@ -918,6 +922,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
           sizeof(info.stream[0].m_cName) - 1);
   info.stream[0].m_uiId = sink.id;
   info.stream[1].m_uiIfPortId = 0;
+  info.stream[0].m_uiPCMId = sink.pcm;  // multi-rate Stage 1
   info.stream[0].m_byNbOfChannels = sink.map.size();
   std::copy(sink.map.begin(), sink.map.end(), info.stream[0].m_aui32Routing);
   info.stream[0].m_ui32PlayOutDelay = sink.delay;
@@ -1037,7 +1042,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
     return DaemonErrc::stream_name_in_use;
   }
 
-  auto ret = driver_->add_rtp_stream(info.stream[0], info.handle[0]);
+  auto ret = driver_->add_rtp_stream(sink.pcm, info.stream[0], info.handle[0]);
   if (ret) {
     if (it != sinks_.end()) {
       /* update operation failed */
@@ -1056,6 +1061,8 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
 
       info.stream[1].m_ui32RTCPSrcIP = ip_addr;
       info.stream[1].m_uiIfPortId = 1;
+      /* multi-rate Stage 1: redundant copy stays on the same PCM. */
+      info.stream[1].m_uiPCMId = sink.pcm;
 
       if (!IN_MULTICAST(info.stream[1].m_ui32DestIP)) {
         auto [mac_addr, mac_str] =
@@ -1065,7 +1072,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
                     info.stream[1].m_ui8DestMAC);
         }
       }
-      ret = driver_->add_rtp_stream(info.stream[1], info.handle[1]);
+      ret = driver_->add_rtp_stream(sink.pcm, info.stream[1], info.handle[1]);
       if (ret) {
         (void)driver_->remove_rtp_stream((*it).second.handle[0]);
         if (it != sinks_.end()) {
@@ -1161,7 +1168,9 @@ std::error_code SessionManager::set_driver_config(std::string_view name,
   else if (name == "set_max_tic_frame_size")
     return driver_->set_max_tic_frame_size(value);
   else if (name == "playout_delay")
-    return driver_->set_playout_delay(value);
+    /* Legacy REST/JSON entry-point with no pcm context applies to PCM 0;
+     * per-PCM playout_delay belongs in device_groups[] config now. */
+    return driver_->set_playout_delay(0, value);
   return DriverErrc::unknown;
 }
 
