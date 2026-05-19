@@ -50,15 +50,23 @@ bool DriverManager::init(const Config& config) {
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
-          set_max_tic_frame_size(config.get_max_tic_frame_size());
+          set_max_tic_frame_size(config.get_max_tic_frame_size()) ||
+          set_sample_rate(config.get_sample_rate());
     if (!res) {
+      int32_t shared_playout_delay = 0;
+      bool have_shared_delay = false;
       for (const auto& g : config.get_device_groups()) {
         if (g.id > 0) {
           (void)add_pcm(g.id, config.get_sample_rate(),
                         g.num_inputs, g.num_outputs);
         }
-        (void)set_playout_delay(g.id, g.playout_delay);
+        if (g.id == 0) {
+          shared_playout_delay = g.playout_delay;
+          have_shared_delay = true;
+        }
       }
+      if (have_shared_delay)
+        (void)set_playout_delay(0, shared_playout_delay);
     }
   }
 
