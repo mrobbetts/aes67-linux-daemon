@@ -3,5 +3,5 @@
 	url = https://github.com/bondagit/cpp-httplib.git
 [submodule "3rdparty/ravenna-alsa-lkm"]
 	path = 3rdparty/ravenna-alsa-lkm
-	url = https://github.com/bondagit/ravenna-alsa-lkm.git
-	branch = aes67-daemon
+	url = https://github.com/mrobbetts/ravenna-alsa-lkm.git
+	branch = multi-pcm-stage1
