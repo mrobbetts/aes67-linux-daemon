@@ -224,11 +224,12 @@ std::error_code DriverManager::add_pcm(uint8_t pcm_id,
                                        uint32_t sample_rate,
                                        uint32_t num_inputs,
                                        uint32_t num_outputs) {
-  /* Multi-rate Stage 1: bounds-check pcm_id against the kernel's MAX_PCMS
-   * before issuing netlink, so user-visible errors say "id N out of range
-   * [1..7]" rather than the generic errno the kernel returns. Keep this
-   * in sync with MAX_PCMS in 3rdparty/ravenna-alsa-lkm/driver/manager.h. */
-  static constexpr uint8_t kMaxPcmId = 7;  // MAX_PCMS=8 → ids 0..7
+  /* Multi-rate: bounds-check pcm_id against the kernel's MAX_PCMS before
+   * issuing netlink, so user-visible errors say "id N out of range [1..15]"
+   * rather than the generic errno the kernel returns. Keep this in sync
+   * with MAX_PCMS in 3rdparty/ravenna-alsa-lkm/driver/manager.h (bumped to
+   * 16 in Stage 2 for the target deployment with HT + multi-rate music). */
+  static constexpr uint8_t kMaxPcmId = 15;  // MAX_PCMS=16 → ids 0..15
   if (pcm_id == 0 || pcm_id > kMaxPcmId) {
     BOOST_LOG_TRIVIAL(fatal)
         << "driver_manager:: add_pcm: pcm_id " << (int)pcm_id
