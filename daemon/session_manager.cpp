@@ -406,7 +406,12 @@ StreamSource SessionManager::get_source_(uint8_t id,
           info.stream[0].m_ucDSCP,
           info.refclk_ptp_traceable,
           {info.stream[0].m_aui32Routing,
-           info.stream[0].m_aui32Routing + info.stream[0].m_byNbOfChannels}};
+           info.stream[0].m_aui32Routing + info.stream[0].m_byNbOfChannels},
+          /* 2026-06-09 review fix: pcm was missing from this positional
+           * init, silently defaulting to 0 — making the PCM binding
+           * write-only (status.json round-trips and REST GETs collapsed
+           * every stream to pcm 0). */
+          static_cast<uint8_t>(info.stream[0].m_uiPCMId)};
 }
 
 StreamSink SessionManager::get_sink_(uint8_t id, const StreamInfo& info) const {
@@ -419,7 +424,11 @@ StreamSink SessionManager::get_sink_(uint8_t id, const StreamInfo& info) const {
           info.stream[0].m_ui32PlayOutDelay,
           info.ignore_refclk_gmid,
           {info.stream[0].m_aui32Routing,
-           info.stream[0].m_aui32Routing + info.stream[0].m_byNbOfChannels}};
+           info.stream[0].m_aui32Routing + info.stream[0].m_byNbOfChannels},
+          /* 2026-06-09 review fix: see get_source_ — without this, SAP
+           * auto-update (get_updated_sinks -> add_sink) live-migrated
+           * sinks to pcm 0 on any upstream SDP version bump. */
+          static_cast<uint8_t>(info.stream[0].m_uiPCMId)};
 }
 
 bool SessionManager::load_status() {
@@ -546,6 +555,34 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
     BOOST_LOG_TRIVIAL(error) << "session_manager:: source id "
                              << std::to_string(source.id) << " is not valid";
     return DaemonErrc::invalid_stream_id;
+  }
+
+  /* 2026-06-09 review hardening: a source bound to an undeclared PCM binds
+   * to an empty kernel chip slot — silently dead stream + leaked kernel
+   * stream handler slot. Fail loud here instead. (No overlap check for
+   * sources: multiple sources READING the same playback channel is
+   * harmless, unlike sinks writing.) */
+  if (source.pcm != 0) {
+    bool declared = false;
+    for (const auto& group : config_->get_device_groups()) {
+      if (group.id == source.pcm) {
+        declared = true;
+        break;
+      }
+    }
+    if (!declared) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: source " << std::to_string(source.id)
+          << " references undeclared PCM " << std::to_string(source.pcm);
+      return DaemonErrc::invalid_pcm;
+    }
+  }
+  if (source.map.size() > MAX_CHANNELS_BY_RTP_STREAM) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: source " << std::to_string(source.id)
+        << " channel map has " << source.map.size() << " entries (max "
+        << MAX_CHANNELS_BY_RTP_STREAM << ")";
+    return DaemonErrc::invalid_channel_map;
   }
 
   StreamInfo info;
@@ -911,6 +948,67 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
     BOOST_LOG_TRIVIAL(error) << "session_manager:: sink id "
                              << std::to_string(sink.id) << " is not valid";
     return DaemonErrc::invalid_stream_id;
+  }
+
+  /* 2026-06-09 review hardening: validate the PCM binding and the channel
+   * map BEFORE anything reaches the kernel — it trusts both blindly (a bad
+   * pcm binds to an empty chip slot and leaks a kernel stream handler; an
+   * oversized map overruns m_aui32Routing[]). */
+  if (sink.pcm != 0) {
+    bool declared = false;
+    for (const auto& group : config_->get_device_groups()) {
+      if (group.id == sink.pcm) {
+        declared = true;
+        break;
+      }
+    }
+    if (!declared) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: sink " << std::to_string(sink.id)
+          << " references undeclared PCM " << std::to_string(sink.pcm);
+      return DaemonErrc::invalid_pcm;
+    }
+  }
+  {
+    bool channel_used[256] = {false};
+    if (sink.map.size() > MAX_CHANNELS_BY_RTP_STREAM) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: sink " << std::to_string(sink.id)
+          << " channel map has " << sink.map.size() << " entries (max "
+          << MAX_CHANNELS_BY_RTP_STREAM << ")";
+      return DaemonErrc::invalid_channel_map;
+    }
+    for (auto ch : sink.map) {
+      if (channel_used[ch]) {
+        BOOST_LOG_TRIVIAL(error)
+            << "session_manager:: sink " << std::to_string(sink.id)
+            << " maps physical channel " << std::to_string(ch) << " twice";
+        return DaemonErrc::invalid_channel_map;
+      }
+      channel_used[ch] = true;
+    }
+    /* Reject overlap with any OTHER sink on the same PCM: two sinks
+     * deinterleaving into the same physical channel is uncoordinated
+     * last-writer-wins in the kernel ring — the 2026-06-04 "constant
+     * crackle" (or silent channels when one sender is idle). */
+    std::shared_lock sinks_lock(sinks_mutex_);
+    for (const auto& [id, other] : sinks_) {
+      if (id == sink.id)  // a PUT replaces this sink; don't self-collide
+        continue;
+      if (other.stream[0].m_uiPCMId != sink.pcm)
+        continue;
+      for (uint8_t ch = 0; ch < other.stream[0].m_byNbOfChannels; ++ch) {
+        auto phys = other.stream[0].m_aui32Routing[ch];
+        if (phys < 256 && channel_used[phys]) {
+          BOOST_LOG_TRIVIAL(error)
+              << "session_manager:: sink " << std::to_string(sink.id)
+              << " physical channel " << phys << " on PCM "
+              << std::to_string(sink.pcm) << " is already mapped by sink "
+              << std::to_string(id);
+          return DaemonErrc::channel_map_overlap;
+        }
+      }
+    }
   }
 
   StreamInfo info;
