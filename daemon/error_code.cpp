@@ -123,6 +123,12 @@ std::string DaemonErrCategory::message(int ev) const {
       return "not enough samples buffered, retry later";
     case DaemonErrc::streamer_not_running:
       return "not running, check PTP lock";
+    case DaemonErrc::invalid_pcm:
+      return "stream references an undeclared PCM/device group";
+    case DaemonErrc::invalid_channel_map:
+      return "channel map too large or has duplicate channels";
+    case DaemonErrc::channel_map_overlap:
+      return "channel map collides with another sink on the same PCM";
     default:
       return "(unrecognized daemon error)";
   }
