@@ -135,6 +135,9 @@ std::string config_to_json(const Config& config) {
          << ",\n      \"num_outputs\": " << g.num_outputs
          << ",\n      \"playout_delay\": " << g.playout_delay
          << ",\n      \"capture_delay\": " << g.capture_delay
+         << ",\n      \"sample_rate\": " << g.sample_rate
+         << ",\n      \"domain\": " << unsigned(g.domain)
+         << ",\n      \"name\": \"" << escape_json(g.name) << "\""
          << "\n    }";
     }
     if (!groups.empty())
@@ -407,6 +410,12 @@ Config json_to_config_(std::istream& js, Config& config) {
           g.num_outputs = gval.get<uint32_t>("num_outputs", 0);
           g.playout_delay = gval.get<int32_t>("playout_delay", 0);
           g.capture_delay = gval.get<int32_t>("capture_delay", 0);
+          /* W7: per-group rate (0 ⇒ inherit daemon-wide default),
+           * planted domain, and ALSA device name — all optional, so
+           * pre-W7 configs parse unchanged (Decision 10). */
+          g.sample_rate = gval.get<uint32_t>("sample_rate", 0);
+          g.domain = gval.get<uint8_t>("domain", 0);
+          g.name = gval.get<std::string>("name", "");
           groups.push_back(g);
         }
         config.set_device_groups(std::move(groups));

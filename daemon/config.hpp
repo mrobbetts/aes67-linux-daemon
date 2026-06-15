@@ -26,14 +26,24 @@
 #include <vector>
 
 /*
- * Multi-rate Stage 1: a DeviceGroup describes one ALSA PCM device exposed by
- * the kernel module (hw:RAVENNA,id). PCM 0 is created at module probe; the
+ * Multi-rate: a DeviceGroup describes one ALSA PCM device exposed by the
+ * kernel module (hw:RAVENNA,id). PCM 0 is created at module probe; the
  * daemon issues MT_ALSA_Msg_AddPCM for any additional groups at startup.
- * Stage 1 keeps a shared sample_rate across groups (the top-level
- * Config::sample_rate_ field). Stage 2 will move sample_rate onto each
- * DeviceGroup. If `device_groups` is absent from daemon.conf, a synthetic
- * group {id:0} is created from the legacy top-level fields so old configs
- * keep working unchanged.
+ *
+ * W7 (Decision 10 — symmetric config surface): every group, INCLUDING
+ * group 0, declares its own optional sample_rate; the top-level
+ * Config::sample_rate_ is demoted to the daemon-wide default a group
+ * inherits when it leaves sample_rate at 0. There is no user-visible
+ * group-0 precedence rule — group 0 is parsed like any other group. The
+ * kernel asymmetry (chip 0 is probe-created and re-rated via the
+ * manager-wide SetSampleRate, groups 1+ via AddPCM) is absorbed by the
+ * driver_manager translation, not exposed here. If `device_groups` is
+ * absent from daemon.conf, a synthetic group {id:0} is created from the
+ * legacy top-level fields so old configs keep working unchanged.
+ *
+ * domain is planted for W11 (multi-PTP-domain) and rejected-if-nonzero
+ * until then, so configs written from W7 onward never need reformatting.
+ * name becomes the ALSA device name (aplay -l) via AddPCM.
  */
 struct DeviceGroup {
   uint8_t id{0};
@@ -41,17 +51,43 @@ struct DeviceGroup {
   uint32_t num_outputs{0};
   int32_t playout_delay{0};
   int32_t capture_delay{0};
+  uint32_t sample_rate{0};  // 0 = inherit the daemon-wide default
+  uint8_t domain{0};        // planted for W11; rejected-if-nonzero until then
+  std::string name;         // ALSA device name; empty ⇒ kernel default
 
   friend bool operator==(const DeviceGroup& a, const DeviceGroup& b) {
     return a.id == b.id && a.num_inputs == b.num_inputs &&
            a.num_outputs == b.num_outputs &&
            a.playout_delay == b.playout_delay &&
-           a.capture_delay == b.capture_delay;
+           a.capture_delay == b.capture_delay &&
+           a.sample_rate == b.sample_rate && a.domain == b.domain &&
+           a.name == b.name;
   }
   friend bool operator!=(const DeviceGroup& a, const DeviceGroup& b) {
     return !(a == b);
   }
 };
+
+/* W7: the supported PCM sample-rate set, mirroring the kernel's
+ * is_valid_pcm_rate (ravenna-alsa-lkm/driver/manager.c). Kept in lockstep
+ * by hand — same constraint the kMaxPcmId duplication note in
+ * driver_manager.cpp already lives with (no shared header across the
+ * daemon/kernel split). */
+inline bool is_valid_pcm_rate(uint32_t rate) {
+  switch (rate) {
+    case 44100:
+    case 48000:
+    case 88200:
+    case 96000:
+    case 176400:
+    case 192000:
+    case 352800:
+    case 384000:
+      return true;
+    default:
+      return false;
+  }
+}
 
 class Config {
  public:
@@ -99,6 +135,18 @@ class Config {
   std::string get_node_id() const;
   bool get_auto_sinks_update() const { return auto_sinks_update_; };
 
+  /* W7: resolved sample rate for a PCM/group id — the group's own
+   * sample_rate, or the daemon-wide default when it left it at 0
+   * (Decision 10). Falls back to the default for an unknown id (e.g. a
+   * stream bound to a group that isn't declared — caught separately by
+   * validation). */
+  uint32_t rate_for_group(uint8_t pcm_id) const {
+    for (const auto& g : device_groups_) {
+      if (g.id == pcm_id)
+        return g.sample_rate != 0 ? g.sample_rate : sample_rate_;
+    }
+    return sample_rate_;
+  }
   const std::vector<DeviceGroup>& get_device_groups() const {
     return device_groups_;
   };
