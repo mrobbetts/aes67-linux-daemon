@@ -17,6 +17,7 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
+#include <cstring>
 #include <thread>
 
 #include "log.hpp"
@@ -77,7 +78,11 @@ bool DriverManager::init(const Config& config) {
     return false;
   }
 
-  sample_rate_ = config.get_sample_rate();
+  /* W7: get_current_sample_rate() reflects the manager-wide rate, which
+   * the kernel keeps equal to chip 0 / group 0's rate. Per-group rates
+   * for groups 1+ are resolved via Config::rate_for_group at each use
+   * site (sources, AddPCM); this stays the group-0 / default rate. */
+  sample_rate_ = config.rate_for_group(0);
 
   TPTPConfig ptp_config;
   ptp_config.ui8Domain = config.get_ptp_domain();
@@ -93,25 +98,27 @@ bool DriverManager::init(const Config& config) {
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
           set_max_tic_frame_size(config.get_max_tic_frame_size()) ||
-          /* multi-rate Stage 1: the kernel module boots with
-           * m_SampleRate = DEFAULT_SAMPLERATE (44100). We need to push the
-           * configured rate before issuing AddPCM, because the AddPCM
-           * handler refuses any rate that doesn't match m_SampleRate.
-           * Without this, a typical config (sample_rate: 48000) plus any
-           * device_group with id > 0 would fail to boot. */
-          set_sample_rate(config.get_sample_rate());
+          /* W7 (Decision 10): group 0's resolved rate is pushed via the
+           * manager-wide SetSampleRate — chip 0 is probe-created and has
+           * no AddPCM, so this is how its rate is set. Groups 1+ carry
+           * their own rate in AddPCM below. (Since W5 the kernel ticks
+           * off-rate chips correctly, so AddPCM no longer requires the
+           * rate to equal m_SampleRate; this SetSampleRate-first step now
+           * concerns only group 0.) */
+          set_sample_rate(config.rate_for_group(0));
     /* multi-rate Stage 1: PCM 0 already exists (created at module probe).
-     * Issue AddPCM for groups 1..N-1. playout_delay is currently stored
-     * manager-wide in the kernel, so we only push it once (from group 0)
-     * to make the "shared delay" Stage 1 limitation visible — any
-     * per-group delay other than group 0's is logged but not applied. */
+     * Issue AddPCM for groups 1..N-1, each at its own resolved rate (W7).
+     * playout_delay is currently stored manager-wide in the kernel, so we
+     * only push it once (from group 0) to make the "shared delay" Stage 1
+     * limitation visible — any per-group delay other than group 0's is
+     * logged but not applied. */
     if (!res) {
       int32_t shared_playout_delay = 0;
       bool have_shared_delay = false;
       for (const auto& g : config.get_device_groups()) {
         if (g.id > 0) {
-          if (auto ec = add_pcm(g.id, config.get_sample_rate(),
-                                g.num_inputs, g.num_outputs)) {
+          if (auto ec = add_pcm(g.id, config.rate_for_group(g.id),
+                                g.num_inputs, g.num_outputs, g.name)) {
             BOOST_LOG_TRIVIAL(fatal)
                 << "driver_manager:: add_pcm id=" << (int)g.id
                 << " failed: " << ec.message();
@@ -223,7 +230,8 @@ std::error_code DriverManager::set_interface_name(const std::string& ifname) {
 std::error_code DriverManager::add_pcm(uint8_t pcm_id,
                                        uint32_t sample_rate,
                                        uint32_t num_inputs,
-                                       uint32_t num_outputs) {
+                                       uint32_t num_outputs,
+                                       const std::string& name) {
   /* Multi-rate: bounds-check pcm_id against the kernel's MAX_PCMS before
    * issuing netlink, so user-visible errors say "id N out of range [1..15]"
    * rather than the generic errno the kernel returns. Keep this in sync
@@ -240,13 +248,17 @@ std::error_code DriverManager::add_pcm(uint8_t pcm_id,
   /* Stage 1: sample_rate must equal the manager-wide rate. We send it
    * anyway for forward-compat with Stage 2; the kernel validates. */
   struct MT_ALSA_AddPCM_args args;
+  memset(&args, 0, sizeof(args));
   args.pcm_id = pcm_id;
   args.sample_rate = sample_rate;
   args.num_inputs = num_inputs;
   args.num_outputs = num_outputs;
+  /* W7: ALSA device name (truncated to the wire field, always NUL-terminated). */
+  std::strncpy(args.name, name.c_str(), sizeof(args.name) - 1);
   BOOST_LOG_TRIVIAL(info) << "driver_manager:: add PCM id=" << (int)pcm_id
                           << " rate=" << sample_rate << " in=" << num_inputs
-                          << " out=" << num_outputs;
+                          << " out=" << num_outputs << " name=\"" << args.name
+                          << "\"";
   this->send_command(MT_ALSA_Msg_AddPCM, sizeof(args),
                      reinterpret_cast<const uint8_t*>(&args));
   return retcode_;
