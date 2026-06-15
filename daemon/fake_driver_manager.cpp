@@ -35,7 +35,10 @@ std::shared_ptr<DriverManager> DriverManager::create() {
 }
 
 bool DriverManager::init(const Config& config) {
-  sample_rate_ = config.get_sample_rate();
+  /* W7: group 0's rate is the manager-wide rate (Decision 10) — mirror the
+   * real DriverManager, which uses rate_for_group(0), not the top-level
+   * default (they differ only when group 0 sets its own sample_rate). */
+  sample_rate_ = config.rate_for_group(0);
 
   TPTPConfig ptp_config;
   ptp_config.ui8Domain = config.get_ptp_domain();
@@ -51,7 +54,7 @@ bool DriverManager::init(const Config& config) {
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
           set_max_tic_frame_size(config.get_max_tic_frame_size()) ||
-          set_sample_rate(config.get_sample_rate());
+          set_sample_rate(config.rate_for_group(0));
     if (!res) {
       int32_t shared_playout_delay = 0;
       bool have_shared_delay = false;
@@ -181,6 +184,10 @@ std::error_code DriverManager::ping() {
 
 std::error_code DriverManager::set_sample_rate(uint32_t sample_rate) {
   sample_rate_ = sample_rate;
+  /* W7: log it so group 0's rate is visible in FAKE_DRIVER test output
+   * (the real driver's SetSampleRate is visible kernel-side). */
+  BOOST_LOG_TRIVIAL(info) << "fake_driver_manager:: set sample rate "
+                          << sample_rate;
   return std::error_code{};
 }
 
