@@ -59,6 +59,7 @@ enum class DaemonErrc {
   invalid_pcm = 51,           // stream references an undeclared PCM/device group
   invalid_channel_map = 52,   // channel map too large or has duplicate channels
   channel_map_overlap = 53,   // channel map collides with another sink on the same PCM
+  invalid_sample_rate = 54,   // stream rate doesn't match its device group's rate (W7)
   send_invalid_size = 60,     // daemon data size too big for buffer
   send_u2k_failed = 61,       // daemon failed to send command to driver
   send_k2u_failed = 62,       // daemon failed to send event response to driver

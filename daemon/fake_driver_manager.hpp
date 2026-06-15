@@ -42,7 +42,8 @@ class DriverManager {
   std::error_code add_pcm(uint8_t pcm_id,
                           uint32_t sample_rate,
                           uint32_t num_inputs,
-                          uint32_t num_outputs);
+                          uint32_t num_outputs,
+                          const std::string& name = "");  // W7: ALSA device name
   std::error_code add_rtp_stream(uint8_t pcm_id,
                                  const TRTP_stream_info& stream_info,
                                  uint64_t& stream_handle);

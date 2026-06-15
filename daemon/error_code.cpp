@@ -129,6 +129,8 @@ std::string DaemonErrCategory::message(int ev) const {
       return "channel map too large or has duplicate channels";
     case DaemonErrc::channel_map_overlap:
       return "channel map collides with another sink on the same PCM";
+    case DaemonErrc::invalid_sample_rate:
+      return "stream sample rate does not match its device group's rate";
     default:
       return "(unrecognized daemon error)";
   }

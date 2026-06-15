@@ -561,8 +561,10 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
   strncpy(info.stream[0].m_cCodec, source.codec.c_str(),
           sizeof(info.stream[0].m_cCodec) - 1);
   info.stream[0].m_ui32MaxSamplesPerPacket = source.max_samples_per_packet;
-  info.stream[0].m_ui32SamplingRate =
-      driver_->get_current_sample_rate();  // last set from driver or config
+  /* W7 (Decision 10): a source advertises ITS group's rate, not the
+   * manager-wide rate — so a source on the 44.1k group emits L24/44100
+   * regardless of what other groups run. */
+  info.stream[0].m_ui32SamplingRate = config_->rate_for_group(source.pcm);
   info.stream[0].m_uiId = source.id;
   info.stream[0].m_uiPCMId = source.pcm;  // multi-rate Stage 1
   info.stream[0].m_ui32RTCPSrcIP = config_->get_ip_addr();
@@ -720,7 +722,10 @@ std::string SessionManager::get_removed_source_sdp_(
 std::string SessionManager::get_source_sdp_(uint32_t id,
                                             const StreamInfo& info) const {
   std::shared_lock ptp_lock(ptp_mutex_);
-  uint32_t sample_rate = driver_->get_current_sample_rate();
+  /* W7 (Decision 10): the SDP rtpmap must advertise this source's group
+   * rate (matches m_ui32SamplingRate stamped in add_source_), not the
+   * manager-wide rate. ptime below derives from it. */
+  uint32_t sample_rate = config_->rate_for_group(info.stream[0].m_uiPCMId);
 
   // need a 12 digit precision for ptime
   std::ostringstream ss_ptime;
@@ -1002,6 +1007,22 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
   }
   info.sink_source = sink.source;
   info.sink_use_sdp = true;  // save back and use with SDP file
+
+  /* W7 (Decision 10): fail-loud if the source's SDP rate doesn't match
+   * the rate of the group this sink is bound to — the daemon-side mirror
+   * of the W6 kernel guard, caught at the REST boundary with a clear
+   * message instead of surfacing as a generic kernel -EINVAL. */
+  {
+    uint32_t group_rate = config_->rate_for_group(sink.pcm);
+    if (info.stream[0].m_ui32SamplingRate != group_rate) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: sink " << sink.id << " SDP rate "
+          << info.stream[0].m_ui32SamplingRate
+          << " does not match device_group " << std::to_string(sink.pcm)
+          << " rate " << group_rate;
+      return DaemonErrc::invalid_sample_rate;
+    }
+  }
 
   info.stream[0].m_ui32FrameSize = info.stream[0].m_ui32MaxSamplesPerPacket;
   if (!info.stream[0].m_ui32FrameSize) {

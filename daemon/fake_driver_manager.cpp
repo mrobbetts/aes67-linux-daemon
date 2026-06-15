@@ -57,8 +57,8 @@ bool DriverManager::init(const Config& config) {
       bool have_shared_delay = false;
       for (const auto& g : config.get_device_groups()) {
         if (g.id > 0) {
-          (void)add_pcm(g.id, config.get_sample_rate(),
-                        g.num_inputs, g.num_outputs);
+          (void)add_pcm(g.id, config.rate_for_group(g.id),
+                        g.num_inputs, g.num_outputs, g.name);
         }
         if (g.id == 0) {
           shared_playout_delay = g.playout_delay;
@@ -134,11 +134,13 @@ std::error_code DriverManager::set_interface_name(const std::string& ifname) {
 }
 
 std::error_code DriverManager::add_pcm(uint8_t pcm_id,
-                                       uint32_t /*sample_rate*/,
+                                       uint32_t sample_rate,
                                        uint32_t /*num_inputs*/,
-                                       uint32_t /*num_outputs*/) {
-  BOOST_LOG_TRIVIAL(info) << "fake_driver_manager:: add PCM id="
-                          << (int)pcm_id;
+                                       uint32_t /*num_outputs*/,
+                                       const std::string& name) {
+  BOOST_LOG_TRIVIAL(info) << "fake_driver_manager:: add PCM id=" << (int)pcm_id
+                          << " rate=" << sample_rate << " name=\"" << name
+                          << "\"";
   return std::error_code{};
 }
 
