@@ -93,7 +93,7 @@ bool DriverManager::init(const Config& config) {
 
   bool res(false);
   if (config.get_driver_restart()) {
-    res = start() || reset(0) ||
+    res = start() || reset(-1 /* all PCMs: clean slate */) ||
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
@@ -177,11 +177,10 @@ std::error_code DriverManager::stop() {
   return retcode_;
 }
 
-std::error_code DriverManager::reset(uint8_t pcm_id) {
-  /* Payload (multi-rate Stage 1+): int32_t pcm_id. Streams ARE tagged
-   * with m_uiPCMId, but the kernel-side reset handler currently still
-   * removes all streams regardless of pcm_id — per-pcm_id reset is a
-   * Stage 2/3 follow-up. See manager.c MT_ALSA_Msg_Reset handler. */
+std::error_code DriverManager::reset(int32_t pcm_id) {
+  /* Payload: int32_t pcm_id. W9 convention (see manager.c MT_ALSA_Msg_Reset):
+   * pcm_id < 0 drains ALL streams (the init-time clean slate); pcm_id >= 0
+   * drains only that PCM's streams, leaving the others running. */
   int32_t id = pcm_id;
   this->send_command(MT_ALSA_Msg_Reset, sizeof(id),
                      reinterpret_cast<const uint8_t*>(&id));

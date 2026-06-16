@@ -70,7 +70,7 @@ class DriverManager {
   std::error_code hello();
   std::error_code start();
   std::error_code stop();
-  std::error_code reset(uint8_t pcm_id);
+  std::error_code reset(int32_t pcm_id);  // pcm_id < 0 = all PCMs (clean slate); >= 0 = that PCM only (W9)
   std::error_code bye();
 
   std::error_code retcode_;

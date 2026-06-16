@@ -49,7 +49,7 @@ bool DriverManager::init(const Config& config) {
 
   bool res(false);
   if (config.get_driver_restart()) {
-    res = start() || reset(0) ||
+    res = start() || reset(-1 /* all PCMs: clean slate */) ||
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
@@ -100,7 +100,7 @@ std::error_code DriverManager::stop() {
   return std::error_code{};
 }
 
-std::error_code DriverManager::reset(uint8_t /*pcm_id*/) {
+std::error_code DriverManager::reset(int32_t /*pcm_id*/) {
   return std::error_code{};
 }
 
