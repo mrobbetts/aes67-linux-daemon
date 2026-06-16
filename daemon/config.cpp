@@ -96,37 +96,15 @@ std::shared_ptr<Config> Config::parse(const std::string& filename,
     config.device_groups_.push_back(g);
   }
 
-  /* W7: validate the device-group set fail-loud before the driver is
-   * touched (Decision 10). Mirrors what the kernel would reject, but with
-   * config-level messages and at startup rather than mid-bring-up. */
+  /* W7 (Decision 10): validate device-groups fail-loud before touching the
+   * driver. Shared with the POST /api/config REST path (config.hpp) so both
+   * entry points reject an invalid set identically. */
   {
-    std::set<uint8_t> seen_ids;
-    std::set<std::string> seen_names;
-    for (const auto& g : config.device_groups_) {
-      uint32_t rate = g.sample_rate != 0 ? g.sample_rate : config.sample_rate_;
-      if (!is_valid_pcm_rate(rate)) {
-        std::cerr << "device_group id=" << unsigned(g.id)
-                  << ": unsupported sample_rate " << rate << std::endl;
-        return nullptr;
-      }
-      if (g.domain != 0) {
-        std::cerr << "device_group id=" << unsigned(g.id) << ": domain "
-                  << unsigned(g.domain)
-                  << " not supported yet (multi-PTP-domain is W11; only "
-                     "domain 0 is allowed)"
-                  << std::endl;
-        return nullptr;
-      }
-      if (!seen_ids.insert(g.id).second) {
-        std::cerr << "device_group id=" << unsigned(g.id)
-                  << ": duplicate id" << std::endl;
-        return nullptr;
-      }
-      if (!g.name.empty() && !seen_names.insert(g.name).second) {
-        std::cerr << "device_group id=" << unsigned(g.id)
-                  << ": duplicate name \"" << g.name << "\"" << std::endl;
-        return nullptr;
-      }
+    std::string dg_err =
+        validate_device_groups(config.device_groups_, config.sample_rate_);
+    if (!dg_err.empty()) {
+      std::cerr << dg_err << std::endl;
+      return nullptr;
     }
   }
 
