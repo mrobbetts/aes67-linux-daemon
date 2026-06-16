@@ -89,6 +89,44 @@ inline bool is_valid_pcm_rate(uint32_t rate) {
   }
 }
 
+/* W7: max device-group / PCM id, mirroring MR_ALSA_MAX_EXTRA_PCMS (15) in the
+ * kernel and kMaxPcmId in driver_manager.cpp (same hand-kept-in-lockstep
+ * caveat as is_valid_pcm_rate above). */
+inline constexpr uint8_t kMaxDeviceGroupId = 15;
+
+/* W7 (Decision 10): validate a device-group set fail-loud. Returns an empty
+ * string when valid, else a human-readable reason. Shared by Config::parse
+ * (file load) and the POST /api/config REST handler so an invalid set is
+ * rejected identically on both — a bad set accepted live would persist and
+ * brick the daemon on the restart the save triggers. */
+inline std::string validate_device_groups(
+    const std::vector<DeviceGroup>& groups, uint32_t default_sample_rate) {
+  for (size_t i = 0; i < groups.size(); ++i) {
+    const auto& g = groups[i];
+    uint32_t rate = g.sample_rate != 0 ? g.sample_rate : default_sample_rate;
+    if (!is_valid_pcm_rate(rate))
+      return "device_group id=" + std::to_string(unsigned(g.id)) +
+             ": unsupported sample_rate " + std::to_string(rate);
+    if (g.domain != 0)
+      return "device_group id=" + std::to_string(unsigned(g.id)) + ": domain " +
+             std::to_string(unsigned(g.domain)) +
+             " not supported yet (multi-PTP-domain is W11; only domain 0 is "
+             "allowed)";
+    if (g.id > kMaxDeviceGroupId)
+      return "device_group id=" + std::to_string(unsigned(g.id)) +
+             ": id exceeds maximum " + std::to_string(unsigned(kMaxDeviceGroupId));
+    for (size_t j = 0; j < i; ++j) {
+      if (groups[j].id == g.id)
+        return "device_group id=" + std::to_string(unsigned(g.id)) +
+               ": duplicate id";
+      if (!g.name.empty() && groups[j].name == g.name)
+        return "device_group id=" + std::to_string(unsigned(g.id)) +
+               ": duplicate name \"" + g.name + "\"";
+    }
+  }
+  return "";
+}
+
 class Config {
  public:
   /* save new config to json file */
