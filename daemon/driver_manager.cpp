@@ -57,7 +57,10 @@ static const std::vector<std::string> alsa_msg_str = {"Start",
                                                       "GetPTPConfig",
                                                       "GetPTPStatus",
                                                       "AddPCM",
-                                                      "RemovePCM"};
+                                                      "RemovePCM",
+                                                      "AddCard",
+                                                      "RegisterCard",
+                                                      "RemoveCard"};
 
 static const std::vector<std::string> ptp_status_str = {"unlocked", "locking",
                                                         "locked"};
@@ -93,46 +96,66 @@ bool DriverManager::init(const Config& config) {
 
   bool res(false);
   if (config.get_driver_restart()) {
+    /* W10 multi-card: the manager-wide setup (clock-domain config, TIC frame
+     * sizing) still applies, but the per-PCM rate no longer goes through the
+     * manager-wide SetSampleRate. That call existed only to rate the
+     * probe-created chip 0; with no probe card, every PCM — group 0 included —
+     * gets its rate via add_pcm_to_card below, and calling SetSampleRate here
+     * (with no chips yet) would needlessly enter the kernel's PTP-relock wait.
+     * m_SampleRate stays at its kernel default (Layer 3 retires it). */
     res = start() || reset(-1 /* all PCMs: clean slate */) ||
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
-          set_max_tic_frame_size(config.get_max_tic_frame_size()) ||
-          /* W7 (Decision 10): group 0's resolved rate is pushed via the
-           * manager-wide SetSampleRate — chip 0 is probe-created and has
-           * no AddPCM, so this is how its rate is set. Groups 1+ carry
-           * their own rate in AddPCM below. (Since W5 the kernel ticks
-           * off-rate chips correctly, so AddPCM no longer requires the
-           * rate to equal m_SampleRate; this SetSampleRate-first step now
-           * concerns only group 0.) */
-          set_sample_rate(config.rate_for_group(0));
-    /* multi-rate Stage 1: PCM 0 already exists (created at module probe).
-     * Issue AddPCM for groups 1..N-1, each at its own resolved rate (W7).
-     * playout_delay is currently stored manager-wide in the kernel, so we
-     * only push it once (from group 0) to make the "shared delay" Stage 1
-     * limitation visible — any per-group delay other than group 0's is
-     * logged but not applied. */
+          set_max_tic_frame_size(config.get_max_tic_frame_size());
+    /* W10 multi-card: each device_group becomes its own ALSA card holding a
+     * single PCM (the flat-config mapping for W10.1b; the nested
+     * cards:[{pcms:[…]}] form is W10.2). Bring each up as
+     * add_card -> add_pcm_to_card -> register_card so the card appears to
+     * userspace with its PCM already attached. card_handle is the group's
+     * enumeration order in [0, MAX_CARDS); the global pcm_id stays g.id. The
+     * old group-0-is-the-probe-card special case is gone — group 0 is created
+     * here like any other group.
+     *
+     * playout_delay is still manager-wide in the kernel (per-PCM is W9
+     * remainder), so we push only group 0's once and warn on the rest. */
     if (!res) {
+      uint8_t card_handle = 0;
       int32_t shared_playout_delay = 0;
       bool have_shared_delay = false;
       for (const auto& g : config.get_device_groups()) {
-        if (g.id > 0) {
-          if (auto ec = add_pcm(g.id, config.rate_for_group(g.id),
-                                g.num_inputs, g.num_outputs, g.name)) {
-            BOOST_LOG_TRIVIAL(fatal)
-                << "driver_manager:: add_pcm id=" << (int)g.id
-                << " failed: " << ec.message();
-            res = true;
-            break;
-          }
+        if (auto ec = add_card(card_handle, g.name, g.domain)) {
+          BOOST_LOG_TRIVIAL(fatal)
+              << "driver_manager:: add_card handle=" << (int)card_handle
+              << " (device_group id=" << (int)g.id
+              << ") failed: " << ec.message();
+          res = true;
+          break;
         }
+        if (auto ec = add_pcm_to_card(card_handle, g.id,
+                                      config.rate_for_group(g.id),
+                                      g.num_inputs, g.num_outputs, g.name)) {
+          BOOST_LOG_TRIVIAL(fatal)
+              << "driver_manager:: add_pcm_to_card card=" << (int)card_handle
+              << " pcm_id=" << (int)g.id << " failed: " << ec.message();
+          res = true;
+          break;
+        }
+        if (auto ec = register_card(card_handle)) {
+          BOOST_LOG_TRIVIAL(fatal)
+              << "driver_manager:: register_card handle=" << (int)card_handle
+              << " failed: " << ec.message();
+          res = true;
+          break;
+        }
+        ++card_handle;
         if (g.id == 0) {
           shared_playout_delay = g.playout_delay;
           have_shared_delay = true;
         } else if (g.playout_delay != 0) {
           BOOST_LOG_TRIVIAL(warning)
               << "driver_manager:: per-group playout_delay not supported "
-                 "in Stage 1; ignoring playout_delay=" << g.playout_delay
+                 "yet; ignoring playout_delay=" << g.playout_delay
               << " on device_group id=" << (int)g.id
               << " (only id=0's playout_delay is applied)";
         }
@@ -226,40 +249,90 @@ std::error_code DriverManager::set_interface_name(const std::string& ifname) {
   return retcode_;
 }
 
-std::error_code DriverManager::add_pcm(uint8_t pcm_id,
-                                       uint32_t sample_rate,
-                                       uint32_t num_inputs,
-                                       uint32_t num_outputs,
-                                       const std::string& name) {
-  /* Multi-rate: bounds-check pcm_id against the kernel's MAX_PCMS before
-   * issuing netlink, so user-visible errors say "id N out of range [1..15]"
-   * rather than the generic errno the kernel returns. Keep this in sync
-   * with MAX_PCMS in 3rdparty/ravenna-alsa-lkm/driver/manager.h (bumped to
-   * 16 in Stage 2 for the target deployment with HT + multi-rate music). */
-  static constexpr uint8_t kMaxPcmId = 15;  // MAX_PCMS=16 → ids 0..15
-  if (pcm_id == 0 || pcm_id > kMaxPcmId) {
+/* W10 multi-card constants — kept in lockstep by hand with the kernel (no
+ * shared header across the daemon/kernel split, same caveat as
+ * is_valid_pcm_rate in config.hpp). */
+static constexpr uint8_t kMaxCards = 4;   // MR_ALSA_MAX_CARDS (audio_driver.h)
+static constexpr uint8_t kMaxPcmId = 15;  // MAX_PCMS=16 → global ids 0..15
+
+std::error_code DriverManager::add_card(uint8_t card_handle,
+                                        const std::string& id,
+                                        uint8_t domain) {
+  if (card_handle >= kMaxCards) {
     BOOST_LOG_TRIVIAL(fatal)
-        << "driver_manager:: add_pcm: pcm_id " << (int)pcm_id
-        << " out of range [1.." << (int)kMaxPcmId
-        << "] (pcm_id 0 is the default PCM, created at module probe)";
+        << "driver_manager:: add_card: handle " << (int)card_handle
+        << " out of range [0.." << (int)(kMaxCards - 1) << "]";
     return std::make_error_code(std::errc::invalid_argument);
   }
-  /* Stage 1: sample_rate must equal the manager-wide rate. We send it
-   * anyway for forward-compat with Stage 2; the kernel validates. */
+  struct MT_ALSA_AddCard_args args;
+  memset(&args, 0, sizeof(args));
+  args.card_handle = card_handle;
+  args.domain = domain;
+  /* ALSA card id (hw:<id>); empty ⇒ kernel default. Truncated to the wire
+   * field, always NUL-terminated. */
+  std::strncpy(args.id, id.c_str(), sizeof(args.id) - 1);
+  BOOST_LOG_TRIVIAL(info) << "driver_manager:: add card handle="
+                          << (int)card_handle << " id=\"" << args.id
+                          << "\" domain=" << (int)domain;
+  this->send_command(MT_ALSA_Msg_AddCard, sizeof(args),
+                     reinterpret_cast<const uint8_t*>(&args));
+  return retcode_;
+}
+
+std::error_code DriverManager::add_pcm_to_card(uint8_t card_handle,
+                                               uint8_t global_pcm_id,
+                                               uint32_t sample_rate,
+                                               uint32_t num_inputs,
+                                               uint32_t num_outputs,
+                                               const std::string& name) {
+  /* global_pcm_id 0 is now a normal PCM (its own card), no longer the
+   * probe-created default — the whole [0..MAX_PCMS) range is valid. */
+  if (global_pcm_id > kMaxPcmId) {
+    BOOST_LOG_TRIVIAL(fatal)
+        << "driver_manager:: add_pcm_to_card: pcm_id " << (int)global_pcm_id
+        << " out of range [0.." << (int)kMaxPcmId << "]";
+    return std::make_error_code(std::errc::invalid_argument);
+  }
+  if (card_handle >= kMaxCards) {
+    BOOST_LOG_TRIVIAL(fatal)
+        << "driver_manager:: add_pcm_to_card: handle " << (int)card_handle
+        << " out of range [0.." << (int)(kMaxCards - 1) << "]";
+    return std::make_error_code(std::errc::invalid_argument);
+  }
   struct MT_ALSA_AddPCM_args args;
   memset(&args, 0, sizeof(args));
-  args.pcm_id = pcm_id;
+  args.card_handle = card_handle;
+  args.pcm_id = global_pcm_id;
   args.sample_rate = sample_rate;
   args.num_inputs = num_inputs;
   args.num_outputs = num_outputs;
-  /* W7: ALSA device name (truncated to the wire field, always NUL-terminated). */
+  /* ALSA device name (truncated to the wire field, always NUL-terminated). */
   std::strncpy(args.name, name.c_str(), sizeof(args.name) - 1);
-  BOOST_LOG_TRIVIAL(info) << "driver_manager:: add PCM id=" << (int)pcm_id
+  BOOST_LOG_TRIVIAL(info) << "driver_manager:: add PCM card=" << (int)card_handle
+                          << " pcm_id=" << (int)global_pcm_id
                           << " rate=" << sample_rate << " in=" << num_inputs
                           << " out=" << num_outputs << " name=\"" << args.name
                           << "\"";
   this->send_command(MT_ALSA_Msg_AddPCM, sizeof(args),
                      reinterpret_cast<const uint8_t*>(&args));
+  return retcode_;
+}
+
+std::error_code DriverManager::register_card(uint8_t card_handle) {
+  int32_t handle = card_handle;
+  BOOST_LOG_TRIVIAL(info) << "driver_manager:: register card handle="
+                          << (int)card_handle;
+  this->send_command(MT_ALSA_Msg_RegisterCard, sizeof(handle),
+                     reinterpret_cast<const uint8_t*>(&handle));
+  return retcode_;
+}
+
+std::error_code DriverManager::remove_card(uint8_t card_handle) {
+  int32_t handle = card_handle;
+  BOOST_LOG_TRIVIAL(info) << "driver_manager:: remove card handle="
+                          << (int)card_handle;
+  this->send_command(MT_ALSA_Msg_RemoveCard, sizeof(handle),
+                     reinterpret_cast<const uint8_t*>(&handle));
   return retcode_;
 }
 

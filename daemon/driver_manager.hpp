@@ -40,14 +40,23 @@ class DriverManager : public DriverHandler {
   std::error_code get_ptp_config(TPTPConfig& config);
   std::error_code get_ptp_status(TPTPStatus& status);
   std::error_code set_interface_name(const std::string& ifname);
-  /* multi-rate Stage 1: per-PCM methods now take a pcm_id (group_id).
-   * add_pcm() asks the kernel to instantiate hw:RAVENNA,pcm_id; pcm_id 0
-   * is created automatically at module probe and must not be re-added. */
-  std::error_code add_pcm(uint8_t pcm_id,
-                          uint32_t sample_rate,
-                          uint32_t num_inputs,
-                          uint32_t num_outputs,
-                          const std::string& name = "");  // W7: ALSA device name
+  /* W10 multi-card: the daemon owns card bringup. A card is created
+   * UNregistered (add_card), its PCM device(s) added (add_pcm_to_card),
+   * then committed (register_card) so userspace sees the card with its full
+   * PCM set at once. card_handle is a daemon-assigned index in [0, MAX_CARDS);
+   * global_pcm_id is the kernel manager's m_apALSAChip[] slot (distinct from
+   * the per-card ALSA device index, assigned by the kernel within the card). */
+  std::error_code add_card(uint8_t card_handle,
+                           const std::string& id,  // ALSA card id (hw:<id>)
+                           uint8_t domain);
+  std::error_code add_pcm_to_card(uint8_t card_handle,
+                                  uint8_t global_pcm_id,
+                                  uint32_t sample_rate,
+                                  uint32_t num_inputs,
+                                  uint32_t num_outputs,
+                                  const std::string& name = "");  // ALSA dev name
+  std::error_code register_card(uint8_t card_handle);
+  std::error_code remove_card(uint8_t card_handle);
   std::error_code add_rtp_stream(uint8_t pcm_id,
                                  const TRTP_stream_info& stream_info,
                                  uint64_t& stream_handle);
