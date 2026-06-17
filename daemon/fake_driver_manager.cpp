@@ -82,6 +82,10 @@ bool DriverManager::init(const Config& config) {
 bool DriverManager::terminate(const Config& config) {
   if (config.get_driver_restart()) {
     stop();
+    /* W10: mirror the real DriverManager -- remove the cards we created on
+     * clean shutdown (reset(-1) is the backstop for unclean exits). */
+    for (size_t i = 0; i < config.get_device_groups().size(); ++i)
+      (void)remove_card(static_cast<uint8_t>(i));
   }
   bye();
   return true;

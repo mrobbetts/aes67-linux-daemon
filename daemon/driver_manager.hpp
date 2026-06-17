@@ -31,6 +31,13 @@ class DriverManager : public DriverHandler {
  public:
   static std::shared_ptr<DriverManager> create();
 
+  /* Stop+join the event-receiver thread while this object is still fully
+   * constructed. An init failure (the driver's, or a later component's) unwinds
+   * and destroys this manager without calling terminate(); without this the
+   * netlink clients are freed under the still-running thread (or it calls our
+   * torn-down on_event) -> SEGV. See DriverHandler::stop_event_thread. */
+  ~DriverManager() override;
+
   // driver interface
   bool init(const Config& config) override;
   bool terminate(const Config& config) override;

@@ -172,9 +172,21 @@ bool DriverManager::init(const Config& config) {
   return !res;
 }
 
+DriverManager::~DriverManager() {
+  /* Last line of defence: ensure the event-receiver thread is gone before this
+   * object's members/vtable are destroyed. No-op after a clean terminate(). */
+  stop_event_thread();
+}
+
 bool DriverManager::terminate(const Config& config) {
   if (config.get_driver_restart()) {
     stop();
+    /* W10: the daemon owns the cards it created -- delete them on clean
+     * shutdown so a stopped daemon doesn't leave hw:* cards lingering in the
+     * kernel. The kernel's reset(-1) clean-slate stays the backstop for unclean
+     * exits (crash/SIGKILL). Same enumeration order init() used for handles. */
+    for (size_t i = 0; i < config.get_device_groups().size(); ++i)
+      (void)remove_card(static_cast<uint8_t>(i));
   }
   bye();
   return DriverHandler::terminate(config);

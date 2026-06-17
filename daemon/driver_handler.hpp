@@ -62,6 +62,13 @@ class DriverHandler {
   virtual void on_event_error(enum MT_ALSA_msg_id id,
                               std::error_code error) = 0;
 
+  /* Stop + join the event-receiver thread (idempotent). A subclass destructor
+   * MUST call this so the thread is gone before the subclass's vtable/members
+   * (which event_receiver calls into via on_event) and these netlink clients
+   * are torn down -- otherwise an init failure that unwinds, or any path that
+   * destroys the handler without terminate(), races the still-running thread. */
+  void stop_event_thread();
+
  private:
   void send(enum MT_ALSA_msg_id id,
             NetlinkClient& client,
