@@ -130,13 +130,19 @@ bool DriverHandler::event_receiver() {
   return true;
 }
 
-bool DriverHandler::terminate(const Config& /* config */) {
-  if (running_) {
-    running_ = false;
+void DriverHandler::stop_event_thread() {
+  /* Idempotent: the atomic exchange ensures only the first caller tears down,
+   * so terminate() and a subclass destructor can both call it safely. */
+  if (running_.exchange(false)) {
     client_u2k_.terminate();
     client_k2u_.terminate();
-    return res_.get();
+    if (res_.valid())
+      res_.get();  // join the event_receiver thread
   }
+}
+
+bool DriverHandler::terminate(const Config& /* config */) {
+  stop_event_thread();
   return true;
 }
 
