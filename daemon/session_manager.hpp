@@ -68,6 +68,32 @@ struct StreamSink {
   uint8_t pcm{0};
 };
 
+/* W10.2 runtime multi-card: a Card is one ALSA card holding (for now) a single
+ * PCM. The card set is runtime state owned by the SessionManager and persisted
+ * to status.json (seeded from daemon.conf device_groups on first boot). `handle`
+ * is the kernel card slot [0, card_handle_max); `pcm` is the global pcm_id
+ * [0, pcm_id_max) that sources/sinks reference via their own `pcm` field. The
+ * flat model: card 1:1 pcm (for now), and streams carry a `pcm` FK. */
+struct Card {
+  uint8_t handle{0};         // kernel card slot [0, card_handle_max)
+  uint8_t pcm{0};            // global pcm_id streams reference [0, pcm_id_max)
+  std::string name;          // ALSA card id (hw:<name>)
+  uint8_t domain{0};         // PTP clock domain (W11; 0 for now)
+  uint32_t sample_rate{0};   // 0 = inherit the daemon-wide default
+  uint32_t num_inputs{0};
+  uint32_t num_outputs{0};
+  int32_t playout_delay{0};
+  int32_t capture_delay{0};
+
+  friend bool operator==(const Card& a, const Card& b) {
+    return a.handle == b.handle && a.pcm == b.pcm && a.name == b.name &&
+           a.domain == b.domain && a.sample_rate == b.sample_rate &&
+           a.num_inputs == b.num_inputs && a.num_outputs == b.num_outputs &&
+           a.playout_delay == b.playout_delay &&
+           a.capture_delay == b.capture_delay;
+  }
+};
+
 struct SinkStreamStatus {
   bool is_rtp_seq_id_error{false};
   bool is_rtp_ssrc_error{false};
@@ -110,6 +136,11 @@ struct StreamInfo {
 class SessionManager {
  public:
   constexpr static uint8_t stream_id_max = 63;
+  /* W10.2 runtime cards. Mirror the kernel's MR_ALSA_MAX_CARDS / MAX_PCMS
+   * (hand-kept in lockstep, same caveat as the kMaxPcmId note in
+   * driver_manager.cpp). */
+  constexpr static uint8_t card_handle_max = 4;  // MR_ALSA_MAX_CARDS
+  constexpr static uint8_t pcm_id_max = 16;      // MAX_PCMS
 
   static std::shared_ptr<SessionManager> create(
       std::shared_ptr<DriverManager> driver,
@@ -142,6 +173,14 @@ class SessionManager {
       for (const auto& sink : get_sinks()) {
         remove_sink(sink.id);
       }
+      /* W10.2: the SessionManager owns the cards now -- tear them down on clean
+       * shutdown (the streams above are already gone, so each remove_card's
+       * cascade is a no-op). Runs before driver->terminate()/bye(), so the
+       * driver is still alive to service the removals. status.json was already
+       * captured by main's save_status() before this. */
+      for (const auto& card : get_cards()) {
+        remove_card(card.handle);
+      }
       return ret;
     }
     return true;
@@ -172,6 +211,15 @@ class SessionManager {
   std::error_code get_sink_status(uint32_t id, SinkStreamStatus& status) const;
   std::error_code remove_sink(uint32_t id);
   uint8_t get_sink_id(const std::string& name) const;
+
+  /* W10.2 runtime cards. add_card allocates a free handle + pcm_id, brings the
+   * card up in the kernel (add_card -> add_pcm_to_card -> register_card) and
+   * persists. remove_card cascade-removes the streams bound to its pcm, tears
+   * the card down, frees the handle+pcm, and persists. */
+  std::error_code add_card(const Card& card);
+  std::error_code remove_card(uint8_t handle);
+  std::list<Card> get_cards() const;
+  std::error_code get_card(uint8_t handle, Card& card) const;
 
   std::error_code set_ptp_config(const PTPConfig& config);
   std::error_code set_driver_config(std::string_view name,
@@ -210,6 +258,16 @@ class SessionManager {
   StreamSource get_source_(uint8_t id, const StreamInfo& info) const;
   StreamSink get_sink_(uint8_t id, const StreamInfo& info) const;
 
+  /* W10.2 card helpers. The alloc_ helpers scan cards_ for the lowest free slot
+   * (caller holds cards_mutex_); return -1 when full. bring_up_card_ creates the
+   * card in the kernel using its handle/pcm as given (caller holds cards_mutex_,
+   * inserts into cards_ on success). seed_cards_from_config_ builds the
+   * first-boot card set from daemon.conf device groups. */
+  int alloc_card_handle_() const;
+  int alloc_card_pcm_() const;
+  std::error_code bring_up_card_(const Card& card);
+  std::list<Card> seed_cards_from_config_() const;
+
   bool sink_is_still_valid(const std::string sdp,
                            const std::list<RemoteSource> sources_list) const;
 
@@ -240,6 +298,11 @@ class SessionManager {
   std::map<uint8_t /* id */, StreamInfo> sinks_;
   std::map<std::string, uint8_t /* id */> sink_names_;
   mutable std::shared_mutex sinks_mutex_;
+
+  /* W10.2 runtime cards, keyed by kernel card handle. Owned here, persisted to
+   * status.json. Guarded by its own mutex (never held across a save_status()). */
+  std::map<uint8_t /* handle */, Card> cards_;
+  mutable std::shared_mutex cards_mutex_;
 
   /* current announced sources */
   std::map<uint32_t /* msg_id_hash */,

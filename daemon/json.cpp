@@ -205,6 +205,20 @@ std::string sink_to_json(const StreamSink& sink) {
   return ss.str();
 }
 
+std::string card_to_json(const Card& card) {
+  std::stringstream ss;
+  ss << "\n  {" << "\n    \"handle\": " << unsigned(card.handle)
+     << ",\n    \"pcm\": " << unsigned(card.pcm)
+     << ",\n    \"name\": \"" << escape_json(card.name) << "\""
+     << ",\n    \"domain\": " << unsigned(card.domain)
+     << ",\n    \"sample_rate\": " << card.sample_rate
+     << ",\n    \"num_inputs\": " << card.num_inputs
+     << ",\n    \"num_outputs\": " << card.num_outputs
+     << ",\n    \"playout_delay\": " << card.playout_delay
+     << ",\n    \"capture_delay\": " << card.capture_delay << "\n  }";
+  return ss.str();
+}
+
 std::string sink_status_to_json(const SinkStreamStatus& status) {
   std::stringstream ss;
   ss << "{";
@@ -270,6 +284,38 @@ std::string streams_to_json(const std::list<StreamSource>& sources,
   int count = 0;
   std::stringstream ss;
   ss << "{\n  \"sources\": [";
+  for (auto const& source : sources) {
+    if (count++) {
+      ss << ", ";
+    }
+    ss << source_to_json(source);
+  }
+  count = 0;
+  ss << "  ],\n  \"sinks\": [";
+  for (auto const& sink : sinks) {
+    if (count++) {
+      ss << ", ";
+    }
+    ss << sink_to_json(sink);
+  }
+  ss << "  ]\n}\n";
+  return ss.str();
+}
+
+std::string status_to_json(const std::list<Card>& cards,
+                           const std::list<StreamSource>& sources,
+                           const std::list<StreamSink>& sinks) {
+  int count = 0;
+  std::stringstream ss;
+  ss << "{\n  \"cards\": [";
+  for (auto const& card : cards) {
+    if (count++) {
+      ss << ", ";
+    }
+    ss << card_to_json(card);
+  }
+  count = 0;
+  ss << "  ],\n  \"sources\": [";
   for (auto const& source : sources) {
     if (count++) {
       ss << ", ";
@@ -615,6 +661,30 @@ void json_to_sources(const std::string& json,
   return json_to_sources(ss, sources);
 }
 
+static void parse_json_cards(boost::property_tree::ptree& pt,
+                             std::list<Card>& cards) {
+  /* tolerant: a status file written before W10.2 (or a first boot) has no
+   * "cards" array — leave the list empty so the SessionManager seeds from
+   * config rather than throwing. */
+  auto node = pt.get_child_optional("cards");
+  if (!node) {
+    return;
+  }
+  BOOST_FOREACH (auto const& v, *node) {
+    Card card;
+    card.handle = v.second.get<uint8_t>("handle", 0);
+    card.pcm = v.second.get<uint8_t>("pcm", 0);
+    card.name = v.second.get<std::string>("name", "");
+    card.domain = v.second.get<uint8_t>("domain", 0);
+    card.sample_rate = v.second.get<uint32_t>("sample_rate", 0);
+    card.num_inputs = v.second.get<uint32_t>("num_inputs", 0);
+    card.num_outputs = v.second.get<uint32_t>("num_outputs", 0);
+    card.playout_delay = v.second.get<int32_t>("playout_delay", 0);
+    card.capture_delay = v.second.get<int32_t>("capture_delay", 0);
+    cards.emplace_back(std::move(card));
+  }
+}
+
 static void parse_json_sources(boost::property_tree::ptree& pt,
                                std::list<StreamSource>& sources) {
   BOOST_FOREACH (auto const& v, pt.get_child("sources")) {
@@ -705,6 +775,30 @@ void json_to_streams(std::istream& js,
   try {
     boost::property_tree::ptree pt;
     boost::property_tree::read_json(js, pt);
+    parse_json_sources(pt, sources);
+    parse_json_sinks(pt, sinks);
+  } catch (boost::property_tree::json_parser::json_parser_error& je) {
+    throw std::runtime_error("error parsing JSON at line " +
+                             std::to_string(je.line()) + " :" + je.message());
+  }
+}
+
+void json_to_status(const std::string& json,
+                    std::list<Card>& cards,
+                    std::list<StreamSource>& sources,
+                    std::list<StreamSink>& sinks) {
+  std::stringstream ss(json);
+  json_to_status(ss, cards, sources, sinks);
+}
+
+void json_to_status(std::istream& js,
+                    std::list<Card>& cards,
+                    std::list<StreamSource>& sources,
+                    std::list<StreamSink>& sinks) {
+  try {
+    boost::property_tree::ptree pt;
+    boost::property_tree::read_json(js, pt);
+    parse_json_cards(pt, cards);
     parse_json_sources(pt, sources);
     parse_json_sinks(pt, sinks);
   } catch (boost::property_tree::json_parser::json_parser_error& je) {

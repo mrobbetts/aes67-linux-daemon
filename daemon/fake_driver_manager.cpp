@@ -49,31 +49,14 @@ bool DriverManager::init(const Config& config) {
 
   bool res(false);
   if (config.get_driver_restart()) {
-    /* W10 multi-card: mirror the real DriverManager — drop the group-0
-     * SetSampleRate and bring each device_group up as its own card. */
+    /* W10.2: mirror the real DriverManager — card creation moved to the
+     * SessionManager (it owns the runtime card set and brings cards up in
+     * load_status). init() keeps only the manager-wide setup. */
     res = start() || reset(-1 /* all PCMs: clean slate */) ||
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
           set_max_tic_frame_size(config.get_max_tic_frame_size());
-    if (!res) {
-      uint8_t card_handle = 0;
-      int32_t shared_playout_delay = 0;
-      bool have_shared_delay = false;
-      for (const auto& g : config.get_device_groups()) {
-        (void)add_card(card_handle, g.name, g.domain);
-        (void)add_pcm_to_card(card_handle, g.id, config.rate_for_group(g.id),
-                              g.num_inputs, g.num_outputs, g.name);
-        (void)register_card(card_handle);
-        ++card_handle;
-        if (g.id == 0) {
-          shared_playout_delay = g.playout_delay;
-          have_shared_delay = true;
-        }
-      }
-      if (have_shared_delay)
-        (void)set_playout_delay(0, shared_playout_delay);
-    }
   }
 
   return !res;
@@ -82,10 +65,8 @@ bool DriverManager::init(const Config& config) {
 bool DriverManager::terminate(const Config& config) {
   if (config.get_driver_restart()) {
     stop();
-    /* W10: mirror the real DriverManager -- remove the cards we created on
-     * clean shutdown (reset(-1) is the backstop for unclean exits). */
-    for (size_t i = 0; i < config.get_device_groups().size(); ++i)
-      (void)remove_card(static_cast<uint8_t>(i));
+    /* W10.2: card teardown moved to SessionManager::terminate (mirror the real
+     * DriverManager). reset(-1) at next init is the backstop for unclean exits. */
   }
   bye();
   return true;

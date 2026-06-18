@@ -431,27 +431,236 @@ StreamSink SessionManager::get_sink_(uint8_t id, const StreamInfo& info) const {
           static_cast<uint8_t>(info.stream[0].m_uiPCMId)};
 }
 
+int SessionManager::alloc_card_handle_() const {
+  /* caller holds cards_mutex_ */
+  for (uint8_t h = 0; h < card_handle_max; ++h) {
+    if (cards_.find(h) == cards_.end()) {
+      return h;
+    }
+  }
+  return -1;
+}
+
+int SessionManager::alloc_card_pcm_() const {
+  /* caller holds cards_mutex_ */
+  for (uint8_t p = 0; p < pcm_id_max; ++p) {
+    bool used = false;
+    for (const auto& [handle, card] : cards_) {
+      (void)handle;
+      if (card.pcm == p) {
+        used = true;
+        break;
+      }
+    }
+    if (!used) {
+      return p;
+    }
+  }
+  return -1;
+}
+
+std::error_code SessionManager::bring_up_card_(const Card& card) {
+  /* caller holds cards_mutex_ (unique). Brings the card up in the kernel using
+   * card.handle/card.pcm AS GIVEN (no allocation) -- so it serves both the
+   * runtime add_card (after it allocates) and load-time rehydration/seeding
+   * (which carries the persisted handle+pcm). Inserts into cards_ on success;
+   * leaves cards_ unchanged and unwinds the kernel card on failure. */
+  uint32_t rate =
+      card.sample_rate ? card.sample_rate : config_->get_sample_rate();
+  /* deferred-register sequence the kernel expects: add_card ->
+   * add_pcm_to_card -> register_card so the card appears to userspace with its
+   * PCM already attached. Unwind on failure. */
+  if (auto ec = driver_->add_card(card.handle, card.name, card.domain)) {
+    BOOST_LOG_TRIVIAL(error) << "session_manager:: add_card driver add_card "
+                                "failed: " << ec.message();
+    return ec;
+  }
+  if (auto ec = driver_->add_pcm_to_card(card.handle, card.pcm, rate,
+                                         card.num_inputs, card.num_outputs,
+                                         card.name)) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: add_card add_pcm_to_card failed: " << ec.message();
+    (void)driver_->remove_card(card.handle);
+    return ec;
+  }
+  if (auto ec = driver_->register_card(card.handle)) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: add_card register_card failed: " << ec.message();
+    (void)driver_->remove_card(card.handle);
+    return ec;
+  }
+  /* playout_delay is still manager-wide in the kernel (per-card is W9
+   * remainder): apply pcm 0's once -- this is where the old DriverManager::init
+   * set_playout_delay(0, ...) moved to, now that chip 0 exists by this point.
+   * Warn on any non-zero delay carried by other pcms. */
+  if (card.pcm == 0) {
+    if (auto ec = driver_->set_playout_delay(0, card.playout_delay)) {
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: set_playout_delay failed: " << ec.message();
+    }
+  } else if (card.playout_delay != 0) {
+    BOOST_LOG_TRIVIAL(warning)
+        << "session_manager:: per-card playout_delay not supported yet; "
+           "ignoring playout_delay=" << card.playout_delay
+        << " on card handle=" << (int)card.handle << " pcm=" << (int)card.pcm;
+  }
+  cards_[card.handle] = card;
+  return std::error_code{};
+}
+
+std::error_code SessionManager::add_card(const Card& spec) {
+  Card card = spec;
+  std::unique_lock cards_lock(cards_mutex_);
+  int handle = alloc_card_handle_();
+  int pcm = alloc_card_pcm_();
+  if (handle < 0 || pcm < 0) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: add_card: no free "
+        << (handle < 0 ? "card handle" : "pcm id")
+        << " (card_handle_max=" << (int)card_handle_max
+        << " pcm_id_max=" << (int)pcm_id_max << ")";
+    return DaemonErrc::card_slots_exhausted;
+  }
+  card.handle = static_cast<uint8_t>(handle);
+  card.pcm = static_cast<uint8_t>(pcm);
+  if (auto ec = bring_up_card_(card)) {
+    return ec;
+  }
+  /* persistence follows the codebase convention: mutators don't write
+   * status.json; it is captured at shutdown (main.cpp save_status, before
+   * terminate tears the cards down). The REST handler (W10.2 slice 2) will call
+   * save_status() after add_card, mirroring add_source's handler. */
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: added card handle="
+                          << (int)card.handle << " pcm=" << (int)card.pcm
+                          << " name=\"" << card.name << "\"";
+  return std::error_code{};
+}
+
+std::error_code SessionManager::remove_card(uint8_t handle) {
+  uint8_t pcm;
+  {
+    std::shared_lock cards_lock(cards_mutex_);
+    auto it = cards_.find(handle);
+    if (it == cards_.end()) {
+      return DaemonErrc::invalid_card_handle;
+    }
+    pcm = it->second.pcm;
+  }
+  /* cascade: drop the streams bound to this card's pcm before tearing it down.
+   * get_sources()/get_sinks() return copies, so mutating via remove_* while we
+   * iterate is safe; remove_* take their own source/sink locks. */
+  for (const auto& source : get_sources()) {
+    if (source.pcm == pcm) {
+      remove_source(source.id);
+    }
+  }
+  for (const auto& sink : get_sinks()) {
+    if (sink.pcm == pcm) {
+      remove_sink(sink.id);
+    }
+  }
+  {
+    std::unique_lock cards_lock(cards_mutex_);
+    auto it = cards_.find(handle);
+    if (it == cards_.end()) {
+      return DaemonErrc::invalid_card_handle;
+    }
+    if (auto ec = driver_->remove_card(handle)) {
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: remove_card driver remove failed: "
+          << ec.message();
+    }
+    cards_.erase(it);
+  }
+  /* persistence is captured at shutdown / by the REST handler (see add_card). */
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: removed card handle="
+                          << (int)handle;
+  return std::error_code{};
+}
+
+std::list<Card> SessionManager::get_cards() const {
+  std::shared_lock cards_lock(cards_mutex_);
+  std::list<Card> list;
+  for (const auto& [handle, card] : cards_) {
+    (void)handle;
+    list.push_back(card);
+  }
+  return list;
+}
+
+std::error_code SessionManager::get_card(uint8_t handle, Card& card) const {
+  std::shared_lock cards_lock(cards_mutex_);
+  auto it = cards_.find(handle);
+  if (it == cards_.end()) {
+    return DaemonErrc::invalid_card_handle;
+  }
+  card = it->second;
+  return std::error_code{};
+}
+
+std::list<Card> SessionManager::seed_cards_from_config_() const {
+  /* First-boot / no-persisted-cards fallback: one card per configured device
+   * group, replicating the old DriverManager::init mapping (handle = group
+   * enumeration order, pcm = group id) so any pre-existing status.json streams
+   * keep their pcm FK valid. */
+  std::list<Card> cards;
+  uint8_t handle = 0;
+  for (const auto& g : config_->get_device_groups()) {
+    Card card;
+    card.handle = handle++;
+    card.pcm = g.id;
+    card.name = g.name;
+    card.domain = g.domain;
+    card.sample_rate = config_->rate_for_group(g.id);
+    card.num_inputs = g.num_inputs;
+    card.num_outputs = g.num_outputs;
+    card.playout_delay = g.playout_delay;
+    card.capture_delay = g.capture_delay;
+    cards.push_back(card);
+  }
+  return cards;
+}
+
 bool SessionManager::load_status() {
-  if (config_->get_status_file().empty()) {
-    return true;
-  }
-
-  std::ifstream jsonstream(config_->get_status_file());
-  if (!jsonstream) {
-    BOOST_LOG_TRIVIAL(fatal) << "session_manager:: cannot load status file "
-                             << config_->get_status_file();
-    return false;
-  }
-
+  std::list<Card> cards_list;
   std::list<StreamSource> sources_list;
   std::list<StreamSink> sinks_list;
 
-  try {
-    json_to_streams(jsonstream, sources_list, sinks_list);
-  } catch (const std::runtime_error& e) {
-    BOOST_LOG_TRIVIAL(fatal)
-        << "session_manager:: cannot parse status file " << e.what();
-    return false;
+  /* Read persisted state if a status file is configured and present. A missing
+   * file is normal on first boot (cards are seeded from config below); a present
+   * but unparseable file is fatal. */
+  if (!config_->get_status_file().empty()) {
+    std::ifstream jsonstream(config_->get_status_file());
+    if (jsonstream) {
+      try {
+        json_to_status(jsonstream, cards_list, sources_list, sinks_list);
+      } catch (const std::runtime_error& e) {
+        BOOST_LOG_TRIVIAL(fatal)
+            << "session_manager:: cannot parse status file " << e.what();
+        return false;
+      }
+    } else {
+      BOOST_LOG_TRIVIAL(info)
+          << "session_manager:: no status file yet, seeding cards from config";
+    }
+  }
+
+  /* W10.2: the SessionManager owns the cards now (DriverManager::init no longer
+   * creates them). Bring up the persisted set, or seed one card per device
+   * group on first boot. Cards must come up BEFORE sources/sinks, which
+   * reference them by pcm. */
+  if (cards_list.empty()) {
+    cards_list = seed_cards_from_config_();
+  }
+  {
+    std::unique_lock cards_lock(cards_mutex_);
+    for (const auto& card : cards_list) {
+      if (auto ec = bring_up_card_(card)) {
+        BOOST_LOG_TRIVIAL(error)
+            << "session_manager:: load_status: card handle=" << (int)card.handle
+            << " pcm=" << (int)card.pcm << " bring-up failed: " << ec.message();
+      }
+    }
   }
 
   for (auto const& source : sources_list) {
@@ -475,7 +684,7 @@ bool SessionManager::save_status() const {
                              << config_->get_status_file();
     return false;
   }
-  jsonstream << streams_to_json(get_sources(), get_sinks());
+  jsonstream << status_to_json(get_cards(), get_sources(), get_sinks());
   BOOST_LOG_TRIVIAL(info) << "session_manager:: status file saved";
 
   return true;

@@ -108,65 +108,13 @@ bool DriverManager::init(const Config& config) {
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
           set_max_tic_frame_size(config.get_max_tic_frame_size());
-    /* W10 multi-card: each device_group becomes its own ALSA card holding a
-     * single PCM (the flat-config mapping for W10.1b; the nested
-     * cards:[{pcms:[…]}] form is W10.2). Bring each up as
-     * add_card -> add_pcm_to_card -> register_card so the card appears to
-     * userspace with its PCM already attached. card_handle is the group's
-     * enumeration order in [0, MAX_CARDS); the global pcm_id stays g.id. The
-     * old group-0-is-the-probe-card special case is gone — group 0 is created
-     * here like any other group.
-     *
-     * playout_delay is still manager-wide in the kernel (per-PCM is W9
-     * remainder), so we push only group 0's once and warn on the rest. */
-    if (!res) {
-      uint8_t card_handle = 0;
-      int32_t shared_playout_delay = 0;
-      bool have_shared_delay = false;
-      for (const auto& g : config.get_device_groups()) {
-        if (auto ec = add_card(card_handle, g.name, g.domain)) {
-          BOOST_LOG_TRIVIAL(fatal)
-              << "driver_manager:: add_card handle=" << (int)card_handle
-              << " (device_group id=" << (int)g.id
-              << ") failed: " << ec.message();
-          res = true;
-          break;
-        }
-        if (auto ec = add_pcm_to_card(card_handle, g.id,
-                                      config.rate_for_group(g.id),
-                                      g.num_inputs, g.num_outputs, g.name)) {
-          BOOST_LOG_TRIVIAL(fatal)
-              << "driver_manager:: add_pcm_to_card card=" << (int)card_handle
-              << " pcm_id=" << (int)g.id << " failed: " << ec.message();
-          res = true;
-          break;
-        }
-        if (auto ec = register_card(card_handle)) {
-          BOOST_LOG_TRIVIAL(fatal)
-              << "driver_manager:: register_card handle=" << (int)card_handle
-              << " failed: " << ec.message();
-          res = true;
-          break;
-        }
-        ++card_handle;
-        if (g.id == 0) {
-          shared_playout_delay = g.playout_delay;
-          have_shared_delay = true;
-        } else if (g.playout_delay != 0) {
-          BOOST_LOG_TRIVIAL(warning)
-              << "driver_manager:: per-group playout_delay not supported "
-                 "yet; ignoring playout_delay=" << g.playout_delay
-              << " on device_group id=" << (int)g.id
-              << " (only id=0's playout_delay is applied)";
-        }
-      }
-      if (!res && have_shared_delay) {
-        if (auto ec = set_playout_delay(0, shared_playout_delay)) {
-          BOOST_LOG_TRIVIAL(warning)
-              << "driver_manager:: set_playout_delay failed: " << ec.message();
-        }
-      }
-    }
+    /* W10.2: card creation moved out of init() and into the SessionManager,
+     * which now owns the runtime card set (seeded from device_groups on first
+     * boot, otherwise rehydrated from status.json). init() keeps only the
+     * manager-wide driver setup above; SessionManager::load_status brings the
+     * cards up (add_card -> add_pcm_to_card -> register_card) after the driver
+     * is started, and applies the shared group-0 playout_delay there (when
+     * chip 0 actually exists). */
   }
 
   return !res;
@@ -181,12 +129,9 @@ DriverManager::~DriverManager() {
 bool DriverManager::terminate(const Config& config) {
   if (config.get_driver_restart()) {
     stop();
-    /* W10: the daemon owns the cards it created -- delete them on clean
-     * shutdown so a stopped daemon doesn't leave hw:* cards lingering in the
-     * kernel. The kernel's reset(-1) clean-slate stays the backstop for unclean
-     * exits (crash/SIGKILL). Same enumeration order init() used for handles. */
-    for (size_t i = 0; i < config.get_device_groups().size(); ++i)
-      (void)remove_card(static_cast<uint8_t>(i));
+    /* W10.2: card teardown moved to SessionManager::terminate (it owns the
+     * cards now and runs before this). The kernel's reset(-1) clean-slate at
+     * next init stays the backstop for unclean exits (crash/SIGKILL). */
   }
   bye();
   return DriverHandler::terminate(config);
