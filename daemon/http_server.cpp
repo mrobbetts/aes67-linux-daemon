@@ -327,6 +327,66 @@ bool HttpServer::init() {
     }
   });
 
+  /* W10.2 runtime cards. Addressed by NAME (the durable identity — handle and
+   * pcm_id are recyclable internal slots). */
+
+  /* get all cards */
+  svr_.Get("/api/cards", [this](const Request& req, Response& res) {
+    auto const cards = session_manager_->get_cards();
+    set_headers(res, "application/json");
+    res.body = cards_to_json(cards);
+  });
+
+  /* get one card by name */
+  svr_.Get("/api/card/([^/]+)", [this](const Request& req, Response& res) {
+    Card card;
+    auto ret = session_manager_->get_card_by_name(req.matches[1].str(), card);
+    if (ret) {
+      set_error(ret, "card " + req.matches[1].str() + " not found", res);
+    } else {
+      set_headers(res, "application/json");
+      res.body = card_to_json(card);
+    }
+  });
+
+  /* add a card (handle + pcm_id are server-assigned) */
+  svr_.Post("/api/card", [this](const Request& req, Response& res) {
+    try {
+      Card card = json_to_card(req.body);
+      auto ret = session_manager_->add_card(card);
+      if (ret) {
+        set_error(ret, "failed to add card " + card.name, res);
+        return;
+      }
+      /* echo back the created card with its assigned handle/pcm_id */
+      Card created;
+      if (!session_manager_->get_card_by_name(card.name, created)) {
+        set_headers(res, "application/json");
+        res.body = card_to_json(created);
+      } else {
+        set_headers(res);
+      }
+    } catch (const std::runtime_error& e) {
+      set_error(400, e.what(), res);
+    }
+  });
+
+  /* remove a card by name (cascades the streams bound to its pcm) */
+  svr_.Delete("/api/card/([^/]+)", [this](const Request& req, Response& res) {
+    Card card;
+    auto ret = session_manager_->get_card_by_name(req.matches[1].str(), card);
+    if (ret) {
+      set_error(ret, "card " + req.matches[1].str() + " not found", res);
+      return;
+    }
+    ret = session_manager_->remove_card(card.handle);
+    if (ret) {
+      set_error(ret, "failed to remove card " + req.matches[1].str(), res);
+    } else {
+      set_headers(res);
+    }
+  });
+
   /* get remote sources */
   svr_.Get("/api/browse/sources/(all|mdns|sap)",
            [this](const Request& req, Response& res) {

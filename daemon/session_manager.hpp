@@ -220,6 +220,7 @@ class SessionManager {
   std::error_code remove_card(uint8_t handle);
   std::list<Card> get_cards() const;
   std::error_code get_card(uint8_t handle, Card& card) const;
+  std::error_code get_card_by_name(const std::string& name, Card& card) const;
 
   std::error_code set_ptp_config(const PTPConfig& config);
   std::error_code set_driver_config(std::string_view name,
@@ -267,6 +268,12 @@ class SessionManager {
   int alloc_card_pcm_() const;
   std::error_code bring_up_card_(const Card& card);
   std::list<Card> seed_cards_from_config_() const;
+  /* pcm resolution against the runtime card set (cards_ is authoritative now —
+   * NOT daemon.conf device_groups, which is only the first-boot seed). All take
+   * cards_mutex_ shared; callers must NOT already hold it. */
+  bool card_for_pcm_(uint8_t pcm, Card& out) const;
+  bool pcm_declared_(uint8_t pcm) const;
+  uint32_t rate_for_pcm_(uint8_t pcm) const;
 
   bool sink_is_still_valid(const std::string sdp,
                            const std::list<RemoteSource> sources_list) const;

@@ -135,6 +135,10 @@ std::string DaemonErrCategory::message(int ev) const {
       return "no free card handle or pcm id for a new card";
     case DaemonErrc::invalid_card_handle:
       return "unknown card handle";
+    case DaemonErrc::card_name_in_use:
+      return "a card with this name already exists";
+    case DaemonErrc::invalid_card_name:
+      return "card name is empty or invalid";
     default:
       return "(unrecognized daemon error)";
   }

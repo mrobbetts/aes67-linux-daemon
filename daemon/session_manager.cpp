@@ -511,6 +511,21 @@ std::error_code SessionManager::bring_up_card_(const Card& card) {
 std::error_code SessionManager::add_card(const Card& spec) {
   Card card = spec;
   std::unique_lock cards_lock(cards_mutex_);
+  /* the name is the card's durable identity (the REST/WebUI layer addresses
+   * cards by name, and it is the kernel's hw:<name> ALSA id) -- require it
+   * non-empty and unique. */
+  if (card.name.empty()) {
+    BOOST_LOG_TRIVIAL(error) << "session_manager:: add_card: empty card name";
+    return DaemonErrc::invalid_card_name;
+  }
+  for (const auto& [h, c] : cards_) {
+    (void)h;
+    if (c.name == card.name) {
+      BOOST_LOG_TRIVIAL(error) << "session_manager:: add_card: name \""
+                               << card.name << "\" already in use";
+      return DaemonErrc::card_name_in_use;
+    }
+  }
   int handle = alloc_card_handle_();
   int pcm = alloc_card_pcm_();
   if (handle < 0 || pcm < 0) {
@@ -527,9 +542,12 @@ std::error_code SessionManager::add_card(const Card& spec) {
     return ec;
   }
   /* persistence follows the codebase convention: mutators don't write
-   * status.json; it is captured at shutdown (main.cpp save_status, before
-   * terminate tears the cards down). The REST handler (W10.2 slice 2) will call
-   * save_status() after add_card, mirroring add_source's handler. */
+   * status.json; it is captured only at shutdown (main.cpp save_status, before
+   * terminate tears the cards down) -- exactly like add_source/add_sink, which
+   * also don't persist on mutation. status.json is a between-restarts store,
+   * not a live mirror. (Caveat for slice 2: unlike streams, a runtime-added
+   * card has no SAP/mDNS auto-rediscovery, so it is lost on an *unclean* exit;
+   * acceptable for now to match streams, revisit if it bites.) */
   BOOST_LOG_TRIVIAL(info) << "session_manager:: added card handle="
                           << (int)card.handle << " pcm=" << (int)card.pcm
                           << " name=\"" << card.name << "\"";
@@ -596,6 +614,46 @@ std::error_code SessionManager::get_card(uint8_t handle, Card& card) const {
   }
   card = it->second;
   return std::error_code{};
+}
+
+std::error_code SessionManager::get_card_by_name(const std::string& name,
+                                                 Card& card) const {
+  std::shared_lock cards_lock(cards_mutex_);
+  for (const auto& [handle, c] : cards_) {
+    (void)handle;
+    if (c.name == name) {
+      card = c;
+      return std::error_code{};
+    }
+  }
+  return DaemonErrc::invalid_card_name;
+}
+
+bool SessionManager::card_for_pcm_(uint8_t pcm, Card& out) const {
+  std::shared_lock cards_lock(cards_mutex_);
+  for (const auto& [handle, card] : cards_) {
+    (void)handle;
+    if (card.pcm == pcm) {
+      out = card;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SessionManager::pcm_declared_(uint8_t pcm) const {
+  Card card;
+  return card_for_pcm_(pcm, card);
+}
+
+uint32_t SessionManager::rate_for_pcm_(uint8_t pcm) const {
+  Card card;
+  if (card_for_pcm_(pcm, card) && card.sample_rate) {
+    return card.sample_rate;
+  }
+  /* unknown pcm (validation rejects those) or a card that inherits the
+   * manager-wide default rate. */
+  return config_->get_sample_rate();
 }
 
 std::list<Card> SessionManager::seed_cards_from_config_() const {
@@ -770,21 +828,15 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
    * to an empty kernel chip slot — silently dead stream + leaked kernel
    * stream handler slot. Fail loud here instead. (No overlap check for
    * sources: multiple sources READING the same playback channel is
-   * harmless, unlike sinks writing.) */
-  if (source.pcm != 0) {
-    bool declared = false;
-    for (const auto& group : config_->get_device_groups()) {
-      if (group.id == source.pcm) {
-        declared = true;
-        break;
-      }
-    }
-    if (!declared) {
-      BOOST_LOG_TRIVIAL(error)
-          << "session_manager:: source " << std::to_string(source.id)
-          << " references undeclared PCM " << std::to_string(source.pcm);
-      return DaemonErrc::invalid_pcm;
-    }
+   * harmless, unlike sinks writing.) W10.2: validate against the runtime card
+   * set (cards_), not daemon.conf device_groups — a REST-added card is a valid
+   * target too, and a config-only group that has no live card is not. */
+  if (!pcm_declared_(source.pcm)) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: source " << std::to_string(source.id)
+        << " references PCM " << std::to_string(source.pcm)
+        << " with no live card";
+    return DaemonErrc::invalid_pcm;
   }
   if (source.map.size() > MAX_CHANNELS_BY_RTP_STREAM) {
     BOOST_LOG_TRIVIAL(error)
@@ -808,10 +860,11 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
   strncpy(info.stream[0].m_cCodec, source.codec.c_str(),
           sizeof(info.stream[0].m_cCodec) - 1);
   info.stream[0].m_ui32MaxSamplesPerPacket = source.max_samples_per_packet;
-  /* W7 (Decision 10): a source advertises ITS group's rate, not the
-   * manager-wide rate — so a source on the 44.1k group emits L24/44100
-   * regardless of what other groups run. */
-  info.stream[0].m_ui32SamplingRate = config_->rate_for_group(source.pcm);
+  /* W7 (Decision 10): a source advertises ITS pcm's rate, not the manager-wide
+   * rate — so a source on the 44.1k card emits L24/44100 regardless of what
+   * other cards run. W10.2: resolved from the owning card (cards_), not
+   * device_groups. */
+  info.stream[0].m_ui32SamplingRate = rate_for_pcm_(source.pcm);
   info.stream[0].m_uiId = source.id;
   info.stream[0].m_uiPCMId = source.pcm;  // multi-rate Stage 1
   info.stream[0].m_ui32RTCPSrcIP = config_->get_ip_addr();
@@ -986,10 +1039,10 @@ std::string SessionManager::get_removed_source_sdp_(
 std::string SessionManager::get_source_sdp_(uint32_t id,
                                             const StreamInfo& info) const {
   std::shared_lock ptp_lock(ptp_mutex_);
-  /* W7 (Decision 10): the SDP rtpmap must advertise this source's group
-   * rate (matches m_ui32SamplingRate stamped in add_source_), not the
-   * manager-wide rate. ptime below derives from it. */
-  uint32_t sample_rate = config_->rate_for_group(info.stream[0].m_uiPCMId);
+  /* W7 (Decision 10): the SDP rtpmap must advertise this source's pcm rate
+   * (matches m_ui32SamplingRate stamped in add_source), not the manager-wide
+   * rate. ptime below derives from it. W10.2: resolved from the owning card. */
+  uint32_t sample_rate = rate_for_pcm_(info.stream[0].m_uiPCMId);
   auto [ip_addr, sec_ip_str] = get_interface_ip(config_->get_interface_name(1));
   bool dup_entry =
       info.st20227_enabled && !sec_ip_str.empty()/* &&
@@ -1167,21 +1220,14 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
   /* 2026-06-09 review hardening: validate the PCM binding and the channel
    * map BEFORE anything reaches the kernel — it trusts both blindly (a bad
    * pcm binds to an empty chip slot and leaks a kernel stream handler; an
-   * oversized map overruns m_aui32Routing[]). */
-  if (sink.pcm != 0) {
-    bool declared = false;
-    for (const auto& group : config_->get_device_groups()) {
-      if (group.id == sink.pcm) {
-        declared = true;
-        break;
-      }
-    }
-    if (!declared) {
-      BOOST_LOG_TRIVIAL(error)
-          << "session_manager:: sink " << std::to_string(sink.id)
-          << " references undeclared PCM " << std::to_string(sink.pcm);
-      return DaemonErrc::invalid_pcm;
-    }
+   * oversized map overruns m_aui32Routing[]). W10.2: validate against the
+   * runtime card set (cards_), not daemon.conf device_groups. */
+  if (!pcm_declared_(sink.pcm)) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: sink " << std::to_string(sink.id)
+        << " references PCM " << std::to_string(sink.pcm)
+        << " with no live card";
+    return DaemonErrc::invalid_pcm;
   }
   {
     bool channel_used[256] = {false};
@@ -1307,17 +1353,17 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
   info.sink_use_sdp = true;  // save back and use with SDP file
 
   /* W7 (Decision 10): fail-loud if the source's SDP rate doesn't match
-   * the rate of the group this sink is bound to — the daemon-side mirror
+   * the rate of the card this sink is bound to — the daemon-side mirror
    * of the W6 kernel guard, caught at the REST boundary with a clear
-   * message instead of surfacing as a generic kernel -EINVAL. */
+   * message instead of surfacing as a generic kernel -EINVAL. W10.2: the
+   * target rate comes from the owning card (cards_), not device_groups. */
   {
-    uint32_t group_rate = config_->rate_for_group(sink.pcm);
-    if (info.stream[0].m_ui32SamplingRate != group_rate) {
+    uint32_t card_rate = rate_for_pcm_(sink.pcm);
+    if (info.stream[0].m_ui32SamplingRate != card_rate) {
       BOOST_LOG_TRIVIAL(error)
           << "session_manager:: sink " << sink.id << " SDP rate "
-          << info.stream[0].m_ui32SamplingRate
-          << " does not match device_group " << std::to_string(sink.pcm)
-          << " rate " << group_rate;
+          << info.stream[0].m_ui32SamplingRate << " does not match card on pcm "
+          << std::to_string(sink.pcm) << " rate " << card_rate;
       return DaemonErrc::invalid_sample_rate;
     }
   }

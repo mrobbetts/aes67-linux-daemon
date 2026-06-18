@@ -273,6 +273,20 @@ std::string sinks_to_json(const std::list<StreamSink>& sinks) {
   return ss.str();
 }
 
+std::string cards_to_json(const std::list<Card>& cards) {
+  int count = 0;
+  std::stringstream ss;
+  ss << "{\n  \"cards\": [";
+  for (auto const& card : cards) {
+    if (count++) {
+      ss << ", ";
+    }
+    ss << card_to_json(card);
+  }
+  ss << "  ]\n}\n";
+  return ss.str();
+}
+
 std::string streams_to_json(const std::list<StreamSource>& sources,
                             const std::list<StreamSink>& sinks) {
   int count = 0;
@@ -517,6 +531,44 @@ Config json_to_config(const std::string& json, const Config& curConfig) {
 Config json_to_config(const std::string& json) {
   std::stringstream ss(json);
   return json_to_config(ss);
+}
+
+Card json_to_card(const std::string& json) {
+  /* JSON request (handle + pcm are server-assigned, ignored if present):
+    "name": "Studio",
+    "domain": 0,
+    "sample_rate": 48000,
+    "num_inputs": 2,
+    "num_outputs": 4,
+    "playout_delay": 0,
+    "capture_delay": 0
+  */
+  Card card;
+  try {
+    boost::property_tree::ptree pt;
+    std::stringstream ss(json);
+    boost::property_tree::read_json(ss, pt);
+
+    card.name = remove_undesired_chars(pt.get<std::string>("name"));
+    card.domain = pt.get<uint8_t>("domain", 0);
+    card.sample_rate = pt.get<uint32_t>("sample_rate", 0);
+    card.num_inputs = pt.get<uint32_t>("num_inputs", 0);
+    card.num_outputs = pt.get<uint32_t>("num_outputs", 0);
+    card.playout_delay = pt.get<int32_t>("playout_delay", 0);
+    card.capture_delay = pt.get<int32_t>("capture_delay", 0);
+  } catch (boost::property_tree::json_parser::json_parser_error& je) {
+    throw std::runtime_error("error parsing JSON at line " +
+                             std::to_string(je.line()) + " :" + je.message());
+  } catch (std::invalid_argument& e) {
+    throw std::runtime_error(
+        "error parsing JSON: cannot perform number conversion");
+  } catch (std::out_of_range& e) {
+    throw std::runtime_error(
+        "error parsing JSON: number conversion out of range");
+  } catch (std::exception& e) {
+    throw std::runtime_error("error parsing JSON: " + std::string(e.what()));
+  }
+  return card;
 }
 
 StreamSource json_to_source(const std::string& id, const std::string& json) {
