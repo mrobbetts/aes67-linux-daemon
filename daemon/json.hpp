@@ -41,8 +41,10 @@ std::string sources_to_json(const std::list<StreamSource>& sources);
 std::string sinks_to_json(const std::list<StreamSink>& sinks);
 std::string cards_to_json(const std::list<Card>& cards);
 /* device_index >= 0 is included (the hw:<card>,<Dev> index, a read-only computed
- * field for REST); persistence passes -1 to omit it. */
-std::string pcm_to_json(const Pcm& pcm, int device_index = -1);
+ * field for REST); persistence passes -1 to omit it. include_card=false omits
+ * the `card` FK (used when the pcm is nested under its card in status.json). */
+std::string pcm_to_json(const Pcm& pcm, int device_index = -1,
+                        bool include_card = true);
 std::string pcms_to_json(const std::list<Pcm>& pcms);
 std::string streams_to_json(const std::list<StreamSource>& sources,
                             const std::list<StreamSink>& sinks);
