@@ -33,6 +33,10 @@ const sdp = '/sdp';
 const sink = '/sink';
 const status = '/status';
 const browseSources = '/browse/sources/all';
+const cards = '/cards';
+const card = '/card';
+const pcms = '/pcms';
+const pcm = '/pcm';
 
 const defaultParams = {
   credentials: 'same-origin',
@@ -249,6 +253,89 @@ export default class RestAPI {
   static getRemoteSources() {
     return this.doFetch(browseSources).catch(err => {
       toast.error('Browse sources get failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  //
+  // W10.2 runtime cards + pcms. Cards are addressed by NAME; PCMs by name within
+  // their card (/api/card/:card/pcm/:pcm). pcm_id is an internal slot.
+  //
+
+  static getCards() {
+    return this.doFetch(cards).catch(err => {
+      toast.error('Cards get failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  static getAllPcms() {
+    return this.doFetch(pcms).catch(err => {
+      toast.error('PCMs get failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  static addCard(name, domain) {
+    return this.doFetch(card, {
+      body: JSON.stringify({
+        name: name,
+        domain: parseInt(domain, 10)
+      }),
+      method: 'POST'
+    }).catch(err => {
+      toast.error('Add Card failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  static removeCard(name) {
+    return this.doFetch(card + '/' + encodeURIComponent(name), {
+      method: 'DELETE'
+    }).catch(err => {
+      toast.error('Remove Card failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  static addPcm(cardName, name, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay) {
+    return this.doFetch(card + '/' + encodeURIComponent(cardName) + pcm, {
+      body: JSON.stringify({
+        name: name,
+        sample_rate: parseInt(sample_rate, 10),
+        num_inputs: parseInt(num_inputs, 10),
+        num_outputs: parseInt(num_outputs, 10),
+        playout_delay: parseInt(playout_delay, 10),
+        capture_delay: parseInt(capture_delay, 10)
+      }),
+      method: 'POST'
+    }).catch(err => {
+      toast.error('Add PCM failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  static updatePcm(cardName, pcmName, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay) {
+    return this.doFetch(card + '/' + encodeURIComponent(cardName) + pcm + '/' + encodeURIComponent(pcmName), {
+      body: JSON.stringify({
+        sample_rate: parseInt(sample_rate, 10),
+        num_inputs: parseInt(num_inputs, 10),
+        num_outputs: parseInt(num_outputs, 10),
+        playout_delay: parseInt(playout_delay, 10),
+        capture_delay: parseInt(capture_delay, 10)
+      }),
+      method: 'PUT'
+    }).catch(err => {
+      toast.error('Update PCM failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  static removePcm(cardName, pcmName) {
+    return this.doFetch(card + '/' + encodeURIComponent(cardName) + pcm + '/' + encodeURIComponent(pcmName), {
+      method: 'DELETE'
+    }).catch(err => {
+      toast.error('Remove PCM failed: ' + err.message)
       return Promise.reject(Error(err.message));
     });
   }

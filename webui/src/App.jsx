@@ -36,6 +36,7 @@ function App() {
     <div>
       <Switch>
         <Route exact path='/PTP' component={() => <ConfigTabs key='PTP' currentTab='PTP' />} />
+        <Route exact path='/Cards' component={() => <ConfigTabs key='Cards' currentTab='Cards' />} />
         <Route exact path='/Sources' component={() => <ConfigTabs key='Sources' currentTab='Sources' />} />
         <Route exact path='/Sinks' component={() => <ConfigTabs key='Sinks' currentTab='Sinks' />} />
         <Route exact path='/Browser' component={() => <ConfigTabs key='Browser' currentTab='Browser' />} />

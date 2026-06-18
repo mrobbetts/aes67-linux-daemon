@@ -24,6 +24,7 @@ import PropTypes from 'prop-types';
 import Tabs from './Tabs';
 import PTP from './PTP';
 import Config from './Config';
+import Cards from './Cards';
 import Sources from './Sources';
 import Sinks from './Sinks';
 import RemoteSources from './RemoteSources';
@@ -57,6 +58,9 @@ class ConfigTabs extends Component {
           </div>
           <div label="PTP">
             <PTP/>
+          </div>
+          <div label="Cards">
+            <Cards/>
           </div>
           <div label="Sources">
             <Sources/>
