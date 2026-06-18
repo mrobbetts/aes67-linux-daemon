@@ -39,6 +39,7 @@ std::string ptp_config_to_json(const PTPConfig& config);
 std::string ptp_status_to_json(const PTPStatus& status);
 std::string sources_to_json(const std::list<StreamSource>& sources);
 std::string sinks_to_json(const std::list<StreamSink>& sinks);
+std::string cards_to_json(const std::list<Card>& cards);
 std::string streams_to_json(const std::list<StreamSource>& sources,
                             const std::list<StreamSink>& sinks);
 /* W10.2 status.json persistence: cards + streams in one document. Distinct from
@@ -59,6 +60,7 @@ Config json_to_config(const std::string& json, const Config& curConfig);
 Config json_to_config(const std::string& json);
 StreamSource json_to_source(const std::string& id, const std::string& json);
 StreamSink json_to_sink(const std::string& id, const std::string& json);
+Card json_to_card(const std::string& json);
 PTPConfig json_to_ptp_config(const std::string& json);
 void json_to_sources(std::istream& jstream, std::list<StreamSource>& sources);
 void json_to_sources(const std::string& json, std::list<StreamSource>& sources);
