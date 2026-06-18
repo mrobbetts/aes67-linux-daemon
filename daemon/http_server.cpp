@@ -371,6 +371,30 @@ bool HttpServer::init() {
     }
   });
 
+  /* edit a card by name: rename and/or re-domain (recreates the card, keeps its
+   * pcms, re-establishes streams). URL name = current; body {name, domain} =
+   * new. Renaming changes the hw:<name> id; a non-zero domain is W11. */
+  svr_.Put("/api/card/([^/]+)", [this](const Request& req, Response& res) {
+    try {
+      Card card = json_to_card(req.body);
+      auto ret = session_manager_->update_card(req.matches[1].str(), card.name,
+                                               card.domain);
+      if (ret) {
+        set_error(ret, "failed to update card " + req.matches[1].str(), res);
+        return;
+      }
+      Card updated;
+      if (!session_manager_->get_card_by_name(card.name, updated)) {
+        set_headers(res, "application/json");
+        res.body = card_to_json(updated);
+      } else {
+        set_headers(res);
+      }
+    } catch (const std::runtime_error& e) {
+      set_error(400, e.what(), res);
+    }
+  });
+
   /* remove a card by name (cascades its pcms + their bound streams) */
   svr_.Delete("/api/card/([^/]+)", [this](const Request& req, Response& res) {
     Card card;

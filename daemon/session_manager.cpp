@@ -621,12 +621,16 @@ std::error_code SessionManager::remove_card(uint8_t handle) {
 }
 
 std::error_code SessionManager::recreate_card_(const std::string& card_name,
-                                               const std::list<Pcm>& new_pcms) {
-  /* the generic recreate engine behind add_pcm/remove_pcm/update_pcm: rebuild
-   * `card_name` to hold exactly `new_pcms` (each carrying its pcm_id -- survivors
-   * keep theirs, so stream FKs stay valid), re-establishing the streams that
-   * were bound. Best-effort (remove-then-add forced by name-uniqueness): a
-   * failed rebuild leaves the card removed. */
+                                               const std::list<Pcm>& new_pcms,
+                                               const std::string& new_name,
+                                               int new_domain) {
+  /* the generic recreate engine behind add_pcm/remove_pcm/update_pcm AND the
+   * card-level rename/re-domain (update_card): rebuild `card_name` to hold
+   * exactly `new_pcms` (each carrying its pcm_id -- survivors keep theirs, so
+   * stream FKs stay valid), re-establishing the streams that were bound.
+   * new_name (if non-empty) renames the card; new_domain (if >= 0) re-domains
+   * it; both default to keeping the existing values. Best-effort (remove-then-
+   * add forced by name-uniqueness): a failed rebuild leaves the card removed. */
   uint8_t old_handle;
   uint8_t domain;
   std::set<uint8_t> old_pcm_ids;
@@ -651,6 +655,9 @@ std::error_code SessionManager::recreate_card_(const std::string& card_name,
       }
     }
   }
+  const std::string target_name = new_name.empty() ? card_name : new_name;
+  const uint8_t target_domain =
+      new_domain >= 0 ? static_cast<uint8_t>(new_domain) : domain;
 
   /* capture the streams currently bound to any of this card's pcms. */
   std::list<StreamSource> bound_sources;
@@ -683,11 +690,11 @@ std::error_code SessionManager::recreate_card_(const std::string& card_name,
     }
     Card card;
     card.handle = static_cast<uint8_t>(handle);
-    card.name = card_name;
-    card.domain = domain;
+    card.name = target_name;
+    card.domain = target_domain;
     std::list<Pcm> pcms = new_pcms;
     for (auto& p : pcms) {
-      p.card = card_name;
+      p.card = target_name;
     }
     if (auto ec = bring_up_card_(card, pcms)) {
       BOOST_LOG_TRIVIAL(error)
@@ -847,6 +854,51 @@ std::error_code SessionManager::update_pcm(const std::string& card_name,
   BOOST_LOG_TRIVIAL(info) << "session_manager:: update_pcm \"" << pcm_name
                           << "\" on card \"" << card_name << "\"";
   return recreate_card_(card_name, new_pcms);
+}
+
+std::error_code SessionManager::update_card(const std::string& name,
+                                            const std::string& new_name,
+                                            uint8_t new_domain) {
+  /* card-level edit: rename and/or re-domain. Recreates the card under the new
+   * identity, keeping its pcm set (pcm_ids preserved) and re-establishing bound
+   * streams. NB: renaming changes the hw:<name> ALSA id (clients referencing the
+   * old name must update), and a non-zero domain is W11/multi-PTP-domain
+   * (untested) -- both surfaced in the WebUI. */
+  std::list<Pcm> pcms;
+  {
+    std::shared_lock cards_lock(cards_mutex_);
+    bool exists = false;
+    for (const auto& [h, c] : cards_) {
+      (void)h;
+      if (c.name == name) {
+        exists = true;
+        break;
+      }
+    }
+    if (!exists) {
+      return DaemonErrc::invalid_card_name;
+    }
+    if (new_name.empty()) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: update_card: empty new name";
+      return DaemonErrc::invalid_card_name;
+    }
+    if (new_name != name) {
+      for (const auto& [h, c] : cards_) {
+        (void)h;
+        if (c.name == new_name) {
+          BOOST_LOG_TRIVIAL(error) << "session_manager:: update_card: name \""
+                                   << new_name << "\" already in use";
+          return DaemonErrc::card_name_in_use;
+        }
+      }
+    }
+    pcms = pcms_of_card_(name);
+  }
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: update_card \"" << name
+                          << "\" -> name=\"" << new_name << "\" domain="
+                          << (int)new_domain;
+  return recreate_card_(name, pcms, new_name, static_cast<int>(new_domain));
 }
 
 std::list<Card> SessionManager::get_cards() const {

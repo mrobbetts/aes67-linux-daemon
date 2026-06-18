@@ -32,18 +32,26 @@ const editCustomStyles = {
   }
 };
 
-// Add a card. A card is card-level only ({name, domain}); PCMs are added to it
-// afterwards from the Cards tree. Name is the durable identity.
+// Add or edit a card. A card is card-level only ({name, domain}); PCMs are added
+// from the Cards tree. Edit renames and/or re-domains it (recreate-card) -- which
+// changes the hw:<name> ALSA id and, for a non-zero domain, enters W11.
 class CardEdit extends Component {
   static propTypes = {
     applyEdit: PropTypes.func.isRequired,
     closeEdit: PropTypes.func.isRequired,
-    editIsOpen: PropTypes.bool.isRequired
+    editIsOpen: PropTypes.bool.isRequired,
+    isEdit: PropTypes.bool,        // edit (rename/re-domain) vs add
+    card: PropTypes.object         // present on edit
   };
 
   constructor(props) {
     super(props);
-    this.state = { name: '', nameErr: true, domain: 0 };
+    const card = this.props.card || {};
+    this.state = {
+      name: card.name || '',
+      nameErr: !(card.name && card.name.length > 0),
+      domain: card.domain !== undefined ? card.domain : 0
+    };
     this.onSubmit = this.onSubmit.bind(this);
     this.onCancel = this.onCancel.bind(this);
   }
@@ -53,10 +61,15 @@ class CardEdit extends Component {
   }
 
   onSubmit() {
-    RestAPI.addCard(this.state.name, this.state.domain).then(function() {
-      toast.success('Card ' + this.state.name + ' added');
+    const done = function() {
+      toast.success('Card ' + this.state.name + (this.props.isEdit ? ' updated' : ' added'));
       this.props.applyEdit();
-    }.bind(this));
+    }.bind(this);
+    if (this.props.isEdit) {
+      RestAPI.updateCard(this.props.card.name, this.state.name, this.state.domain).then(done);
+    } else {
+      RestAPI.addCard(this.state.name, this.state.domain).then(done);
+    }
   }
 
   onCancel() {
@@ -71,7 +84,14 @@ class CardEdit extends Component {
           onRequestClose={this.props.closeEdit}
           style={editCustomStyles}
           contentLabel='Card Edit'>
-          <h2><center>Add Card</center></h2>
+          <h2><center>{this.props.isEdit ? 'Edit Card "' + this.props.card.name + '"' : 'Add Card'}</center></h2>
+          { this.props.isEdit ?
+            <p style={{textAlign: 'center', color: '#a60', maxWidth: '32em'}}>
+              Renaming changes the card's <code>hw:&lt;name&gt;</code> ALSA id — update any
+              CamillaDSP/clients pointing at it. A non-zero PTP domain is multi-domain
+              (W11, untested) — the card only locks if a PTP master exists on that domain.
+              Either change briefly interrupts this card's audio.
+            </p> : undefined }
           <table><tbody>
             <tr>
               <th align='left'> <label>Name</label> </th>
