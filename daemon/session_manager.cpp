@@ -827,8 +827,24 @@ std::error_code SessionManager::update_pcm(const std::string& card_name,
                                            const Pcm& new_params) {
   std::list<Pcm> new_pcms;
   bool found = false;
+  /* new_params.name (if non-empty) renames the pcm; empty keeps it. The rename
+   * is benign vs a card rename -- pcm_id (hence hw:<card>,<dev> and stream FKs)
+   * is preserved; only the management label + the snd_pcm description change. */
+  const std::string new_name =
+      new_params.name.empty() ? pcm_name : new_params.name;
   {
     std::shared_lock cards_lock(cards_mutex_);
+    if (new_name != pcm_name) {
+      for (const auto& [pid, p] : pcms_) {
+        (void)pid;
+        if (p.card == card_name && p.name == new_name) {
+          BOOST_LOG_TRIVIAL(error)
+              << "session_manager:: update_pcm: pcm \"" << new_name
+              << "\" already exists on card \"" << card_name << "\"";
+          return DaemonErrc::pcm_name_in_use;
+        }
+      }
+    }
     for (const auto& [pid, p] : pcms_) {
       (void)pid;
       if (p.card != card_name) {
@@ -836,7 +852,8 @@ std::error_code SessionManager::update_pcm(const std::string& card_name,
       }
       if (p.name == pcm_name) {
         found = true;
-        Pcm updated = p;  // keep pcm_id, card, name (the identity)
+        Pcm updated = p;  // keep pcm_id, card
+        updated.name = new_name;
         updated.sample_rate = new_params.sample_rate;
         updated.num_inputs = new_params.num_inputs;
         updated.num_outputs = new_params.num_outputs;
@@ -852,7 +869,8 @@ std::error_code SessionManager::update_pcm(const std::string& card_name,
     return DaemonErrc::invalid_pcm_name;
   }
   BOOST_LOG_TRIVIAL(info) << "session_manager:: update_pcm \"" << pcm_name
-                          << "\" on card \"" << card_name << "\"";
+                          << "\" on card \"" << card_name << "\" -> name=\""
+                          << new_name << "\"";
   return recreate_card_(card_name, new_pcms);
 }
 

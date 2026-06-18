@@ -71,9 +71,10 @@ class PcmEdit extends Component {
       this.props.applyEdit();
     }.bind(this);
     if (this.props.isEdit) {
-      RestAPI.updatePcm(this.props.cardName, this.state.name, this.state.sampleRate,
-        this.state.numInputs, this.state.numOutputs, this.state.playoutDelay,
-        this.state.captureDelay).then(done);
+      // URL carries the current (old) name; the body carries the possibly-new one.
+      RestAPI.updatePcm(this.props.cardName, this.props.pcm.name, this.state.name,
+        this.state.sampleRate, this.state.numInputs, this.state.numOutputs,
+        this.state.playoutDelay, this.state.captureDelay).then(done);
     } else {
       RestAPI.addPcm(this.props.cardName, this.state.name, this.state.sampleRate,
         this.state.numInputs, this.state.numOutputs, this.state.playoutDelay,
@@ -103,7 +104,6 @@ class PcmEdit extends Component {
             <tr>
               <th align='left'> <label>Name</label> </th>
               <th align='left'> <input value={this.state.name}
-                disabled={this.props.isEdit ? true : undefined}
                 onChange={e => this.setState({name: e.target.value, nameErr: e.target.value.length === 0})}
                 required/> </th>
             </tr>
