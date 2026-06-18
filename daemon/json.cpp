@@ -207,11 +207,15 @@ std::string card_to_json(const Card& card) {
   return ss.str();
 }
 
-std::string pcm_to_json(const Pcm& pcm, int device_index) {
+std::string pcm_to_json(const Pcm& pcm, int device_index, bool include_card) {
   std::stringstream ss;
-  ss << "\n  {" << "\n    \"pcm_id\": " << unsigned(pcm.pcm_id)
-     << ",\n    \"card\": \"" << escape_json(pcm.card) << "\""
-     << ",\n    \"name\": \"" << escape_json(pcm.name) << "\""
+  ss << "\n  {" << "\n    \"pcm_id\": " << unsigned(pcm.pcm_id);
+  /* nested under its card in status.json the `card` FK is redundant (implied by
+   * the parent) — omit it; the flat REST representation keeps it. */
+  if (include_card) {
+    ss << ",\n    \"card\": \"" << escape_json(pcm.card) << "\"";
+  }
+  ss << ",\n    \"name\": \"" << escape_json(pcm.name) << "\""
      << ",\n    \"sample_rate\": " << pcm.sample_rate
      << ",\n    \"num_inputs\": " << pcm.num_inputs
      << ",\n    \"num_outputs\": " << pcm.num_outputs
@@ -341,20 +345,28 @@ std::string status_to_json(const std::list<Card>& cards,
                            const std::list<StreamSink>& sinks) {
   int count = 0;
   std::stringstream ss;
+  /* card -> pcm is containment (a pcm is part of its card, not re-pairable), so
+   * pcms nest UNDER their card here. Streams stay flat with a pcm FK (that
+   * binding IS re-pairable). */
   ss << "{\n  \"cards\": [";
   for (auto const& card : cards) {
     if (count++) {
       ss << ", ";
     }
-    ss << card_to_json(card);
-  }
-  count = 0;
-  ss << "  ],\n  \"pcms\": [";
-  for (auto const& pcm : pcms) {
-    if (count++) {
-      ss << ", ";
+    ss << "\n  {" << "\n    \"handle\": " << unsigned(card.handle)
+       << ",\n    \"name\": \"" << escape_json(card.name) << "\""
+       << ",\n    \"domain\": " << unsigned(card.domain) << ",\n    \"pcms\": [";
+    int pcount = 0;
+    for (auto const& pcm : pcms) {
+      if (pcm.card != card.name) {
+        continue;
+      }
+      if (pcount++) {
+        ss << ", ";
+      }
+      ss << pcm_to_json(pcm, -1, false);  // no device_index, no card (nested)
     }
-    ss << pcm_to_json(pcm);
+    ss << " ]\n  }";
   }
   count = 0;
   ss << "  ],\n  \"sources\": [";
@@ -760,11 +772,30 @@ void json_to_sources(const std::string& json,
   return json_to_sources(ss, sources);
 }
 
+static Pcm parse_one_pcm(const boost::property_tree::ptree& v,
+                         const std::string& card_name) {
+  Pcm pcm;
+  pcm.pcm_id = v.get<uint8_t>("pcm_id", 0);
+  /* nested form: card comes from the parent (card_name); flat/legacy form: from
+   * the pcm's own "card" field. */
+  pcm.card = card_name.empty() ? v.get<std::string>("card", "") : card_name;
+  pcm.name = v.get<std::string>("name", "");
+  pcm.sample_rate = v.get<uint32_t>("sample_rate", 0);
+  pcm.num_inputs = v.get<uint32_t>("num_inputs", 0);
+  pcm.num_outputs = v.get<uint32_t>("num_outputs", 0);
+  pcm.playout_delay = v.get<int32_t>("playout_delay", 0);
+  pcm.capture_delay = v.get<int32_t>("capture_delay", 0);
+  return pcm;
+}
+
 static void parse_json_cards(boost::property_tree::ptree& pt,
-                             std::list<Card>& cards) {
+                             std::list<Card>& cards,
+                             std::list<Pcm>& pcms) {
   /* tolerant: a status file written before W10.2 (or a first boot) has no
-   * "cards" array — leave the list empty so the SessionManager seeds from
-   * config rather than throwing. */
+   * "cards" array — leave the lists empty so the SessionManager seeds from
+   * config rather than throwing. PCMs nest under their card (current format);
+   * the flat top-level "pcms" form is still read by parse_json_pcms below for
+   * one-time migration. */
   auto node = pt.get_child_optional("cards");
   if (!node) {
     return;
@@ -774,29 +805,27 @@ static void parse_json_cards(boost::property_tree::ptree& pt,
     card.handle = v.second.get<uint8_t>("handle", 0);
     card.name = v.second.get<std::string>("name", "");
     card.domain = v.second.get<uint8_t>("domain", 0);
-    cards.emplace_back(std::move(card));
+    cards.emplace_back(card);
+    auto pcms_node = v.second.get_child_optional("pcms");
+    if (pcms_node) {
+      BOOST_FOREACH (auto const& pv, *pcms_node) {
+        pcms.emplace_back(parse_one_pcm(pv.second, card.name));
+      }
+    }
   }
 }
 
 static void parse_json_pcms(boost::property_tree::ptree& pt,
                             std::list<Pcm>& pcms) {
-  /* tolerant: a status file with cards but no "pcms" (or a first boot) leaves
-   * the list empty so the SessionManager seeds from config. */
+  /* MIGRATION ONLY: the pre-reshape format had a flat top-level "pcms" array
+   * (each carrying its own "card" FK). The current format nests pcms under
+   * cards (parsed in parse_json_cards). Tolerant of absence. */
   auto node = pt.get_child_optional("pcms");
   if (!node) {
     return;
   }
   BOOST_FOREACH (auto const& v, *node) {
-    Pcm pcm;
-    pcm.pcm_id = v.second.get<uint8_t>("pcm_id", 0);
-    pcm.card = v.second.get<std::string>("card", "");
-    pcm.name = v.second.get<std::string>("name", "");
-    pcm.sample_rate = v.second.get<uint32_t>("sample_rate", 0);
-    pcm.num_inputs = v.second.get<uint32_t>("num_inputs", 0);
-    pcm.num_outputs = v.second.get<uint32_t>("num_outputs", 0);
-    pcm.playout_delay = v.second.get<int32_t>("playout_delay", 0);
-    pcm.capture_delay = v.second.get<int32_t>("capture_delay", 0);
-    pcms.emplace_back(std::move(pcm));
+    pcms.emplace_back(parse_one_pcm(v.second, ""));
   }
 }
 
@@ -915,8 +944,8 @@ void json_to_status(std::istream& js,
   try {
     boost::property_tree::ptree pt;
     boost::property_tree::read_json(js, pt);
-    parse_json_cards(pt, cards);
-    parse_json_pcms(pt, pcms);
+    parse_json_cards(pt, cards, pcms);  // pcms nested under cards (current)
+    parse_json_pcms(pt, pcms);          // top-level "pcms" (legacy migration)
     parse_json_sources(pt, sources);
     parse_json_sinks(pt, sinks);
   } catch (boost::property_tree::json_parser::json_parser_error& je) {
