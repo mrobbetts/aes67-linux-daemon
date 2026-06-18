@@ -218,6 +218,14 @@ class SessionManager {
    * the card down, frees the handle+pcm, and persists. */
   std::error_code add_card(const Card& card);
   std::error_code remove_card(uint8_t handle);
+  /* re-rate / re-config a card by name: capture its bound streams, remove it,
+   * re-add with new_params (keeping the URL name as the identity — body name is
+   * ignored), then re-establish the captured streams through the normal
+   * validated path (incompatible ones, e.g. a sink whose SDP rate no longer
+   * matches the new card rate, are dropped + logged). Remove-then-add is forced
+   * by name-uniqueness, so it is best-effort: a failed re-add leaves the card
+   * removed. */
+  std::error_code recreate_card(const std::string& name, const Card& new_params);
   std::list<Card> get_cards() const;
   std::error_code get_card(uint8_t handle, Card& card) const;
   std::error_code get_card_by_name(const std::string& name, Card& card) const;

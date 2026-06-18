@@ -596,6 +596,87 @@ std::error_code SessionManager::remove_card(uint8_t handle) {
   return std::error_code{};
 }
 
+std::error_code SessionManager::recreate_card(const std::string& name,
+                                              const Card& new_params) {
+  Card old_card;
+  if (auto ec = get_card_by_name(name, old_card)) {
+    return ec;  // not found
+  }
+  const uint8_t old_pcm = old_card.pcm;
+
+  /* capture the streams bound to this card (full copies) so we can
+   * re-establish them after the recreate. get_sources()/get_sinks() return the
+   * same shape that persists+reloads cleanly, so re-adding them is the proven
+   * load path. */
+  std::list<StreamSource> bound_sources;
+  for (const auto& s : get_sources()) {
+    if (s.pcm == old_pcm) {
+      bound_sources.push_back(s);
+    }
+  }
+  std::list<StreamSink> bound_sinks;
+  for (const auto& s : get_sinks()) {
+    if (s.pcm == old_pcm) {
+      bound_sinks.push_back(s);
+    }
+  }
+
+  /* tear down the old card (cascade-removes the bound streams). */
+  if (auto ec = remove_card(old_card.handle)) {
+    return ec;
+  }
+
+  /* bring up the replacement under the same name (identity = URL name; the
+   * body's name, if any, is ignored). Best-effort: on failure the card is gone
+   * and its streams dropped -- log loudly. */
+  Card fresh = new_params;
+  fresh.name = name;
+  if (auto ec = add_card(fresh)) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: recreate_card \"" << name
+        << "\": replacement add failed (" << ec.message() << ") -- card and its "
+        << (bound_sources.size() + bound_sinks.size())
+        << " stream(s) are now removed";
+    return ec;
+  }
+
+  /* re-point the captured streams at the new card's pcm (recreate usually
+   * recycles the same slot, but not always) and re-establish each through the
+   * normal validated path -- streams that no longer fit (e.g. a sink whose SDP
+   * rate != the new card rate) are dropped with a logged warning. */
+  Card created;
+  (void)get_card_by_name(name, created);
+  const uint8_t new_pcm = created.pcm;
+  int reestablished = 0, dropped = 0;
+  for (auto src : bound_sources) {
+    src.pcm = new_pcm;
+    if (auto ec = add_source(src)) {
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: recreate_card \"" << name << "\": source "
+          << (int)src.id << " not re-established: " << ec.message();
+      ++dropped;
+    } else {
+      ++reestablished;
+    }
+  }
+  for (auto snk : bound_sinks) {
+    snk.pcm = new_pcm;
+    if (auto ec = add_sink(snk)) {
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: recreate_card \"" << name << "\": sink "
+          << (int)snk.id << " not re-established: " << ec.message();
+      ++dropped;
+    } else {
+      ++reestablished;
+    }
+  }
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: recreate_card \"" << name
+                          << "\": " << reestablished
+                          << " stream(s) re-established, " << dropped
+                          << " dropped";
+  return std::error_code{};
+}
+
 std::list<Card> SessionManager::get_cards() const {
   std::shared_lock cards_lock(cards_mutex_);
   std::list<Card> list;

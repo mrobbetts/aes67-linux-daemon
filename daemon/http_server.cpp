@@ -371,6 +371,30 @@ bool HttpServer::init() {
     }
   });
 
+  /* recreate a card by name (re-rate / re-config): removes + re-adds with the
+   * posted config and re-establishes the streams that were bound (incompatible
+   * ones are dropped). Body name, if any, is ignored — the URL name is the
+   * identity. */
+  svr_.Put("/api/card/([^/]+)", [this](const Request& req, Response& res) {
+    try {
+      Card card = json_to_card(req.body);
+      auto ret = session_manager_->recreate_card(req.matches[1].str(), card);
+      if (ret) {
+        set_error(ret, "failed to recreate card " + req.matches[1].str(), res);
+        return;
+      }
+      Card updated;
+      if (!session_manager_->get_card_by_name(req.matches[1].str(), updated)) {
+        set_headers(res, "application/json");
+        res.body = card_to_json(updated);
+      } else {
+        set_headers(res);
+      }
+    } catch (const std::runtime_error& e) {
+      set_error(400, e.what(), res);
+    }
+  });
+
   /* remove a card by name (cascades the streams bound to its pcm) */
   svr_.Delete("/api/card/([^/]+)", [this](const Request& req, Response& res) {
     Card card;
