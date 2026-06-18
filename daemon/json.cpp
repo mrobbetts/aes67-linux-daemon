@@ -567,7 +567,10 @@ Card json_to_card(const std::string& json) {
     std::stringstream ss(json);
     boost::property_tree::read_json(ss, pt);
 
-    card.name = remove_undesired_chars(pt.get<std::string>("name"));
+    /* name optional at the parse layer so a missing/empty name surfaces
+       add_card's clear "card name is empty or invalid" rather than a raw
+       ptree "No such node (name)". */
+    card.name = remove_undesired_chars(pt.get<std::string>("name", ""));
     card.domain = pt.get<uint8_t>("domain", 0);
     card.sample_rate = pt.get<uint32_t>("sample_rate", 0);
     card.num_inputs = pt.get<uint32_t>("num_inputs", 0);
