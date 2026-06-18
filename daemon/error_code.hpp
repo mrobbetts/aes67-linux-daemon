@@ -60,6 +60,8 @@ enum class DaemonErrc {
   invalid_channel_map = 52,   // channel map too large or has duplicate channels
   channel_map_overlap = 53,   // channel map collides with another sink on the same PCM
   invalid_sample_rate = 54,   // stream rate doesn't match its device group's rate (W7)
+  card_slots_exhausted = 55,  // no free card handle / pcm id for a new card (W10.2)
+  invalid_card_handle = 56,   // operation references an unknown card handle (W10.2)
   send_invalid_size = 60,     // daemon data size too big for buffer
   send_u2k_failed = 61,       // daemon failed to send command to driver
   send_k2u_failed = 62,       // daemon failed to send event response to driver

@@ -131,6 +131,10 @@ std::string DaemonErrCategory::message(int ev) const {
       return "channel map collides with another sink on the same PCM";
     case DaemonErrc::invalid_sample_rate:
       return "stream sample rate does not match its device group's rate";
+    case DaemonErrc::card_slots_exhausted:
+      return "no free card handle or pcm id for a new card";
+    case DaemonErrc::invalid_card_handle:
+      return "unknown card handle";
     default:
       return "(unrecognized daemon error)";
   }

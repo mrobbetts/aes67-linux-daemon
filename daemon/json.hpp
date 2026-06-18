@@ -33,6 +33,7 @@
 std::string config_to_json(const Config& config);
 std::string source_to_json(const StreamSource& source);
 std::string sink_to_json(const StreamSink& sink);
+std::string card_to_json(const Card& card);
 std::string sink_status_to_json(const SinkStreamStatus& status);
 std::string ptp_config_to_json(const PTPConfig& config);
 std::string ptp_status_to_json(const PTPStatus& status);
@@ -40,6 +41,11 @@ std::string sources_to_json(const std::list<StreamSource>& sources);
 std::string sinks_to_json(const std::list<StreamSink>& sinks);
 std::string streams_to_json(const std::list<StreamSource>& sources,
                             const std::list<StreamSink>& sinks);
+/* W10.2 status.json persistence: cards + streams in one document. Distinct from
+ * streams_to_json (the REST /api/streams body, which stays cards-free). */
+std::string status_to_json(const std::list<Card>& cards,
+                           const std::list<StreamSource>& sources,
+                           const std::list<StreamSink>& sinks);
 std::string remote_source_to_json(const RemoteSource& source);
 std::string remote_sources_to_json(const std::list<RemoteSource>& sources);
 #ifdef _USE_STREAMER_
@@ -64,5 +70,15 @@ void json_to_streams(std::istream& jstream,
 void json_to_streams(const std::string& json,
                      std::list<StreamSource>& sources,
                      std::list<StreamSink>& sinks);
+/* W10.2 status.json: parse cards + streams. A missing "cards" array is tolerated
+ * (legacy status files / first boot) so the SessionManager seeds from config. */
+void json_to_status(std::istream& jstream,
+                    std::list<Card>& cards,
+                    std::list<StreamSource>& sources,
+                    std::list<StreamSink>& sinks);
+void json_to_status(const std::string& json,
+                    std::list<Card>& cards,
+                    std::list<StreamSource>& sources,
+                    std::list<StreamSink>& sinks);
 
 #endif
