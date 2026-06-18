@@ -24,6 +24,7 @@ import {toast} from 'react-toastify';
 import Modal from 'react-modal';
 
 import RestAPI from './Services';
+import PcmPicker from './PcmPicker';
 
 const editCustomStyles = {
   content : {
@@ -53,6 +54,7 @@ class SinkEdit extends Component {
       id: this.props.sink.id,
       name: this.props.sink.name,
       nameErr: false,
+      pcm: this.props.sink.pcm !== undefined ? this.props.sink.pcm : 0,
       io: this.props.sink.io,
       delay: this.props.sink.delay,
       ignoreRefclkGmid: this.props.sink.ignore_refclk_gmid,
@@ -101,6 +103,7 @@ class SinkEdit extends Component {
       this.state.sdp ? this.state.sdp : '',
       this.state.ignoreRefclkGmid,
       this.state.map,
+      this.state.pcm,
       this.props.isEdit)
     .then(function(response) {
       this.props.applyEdit();
@@ -170,6 +173,7 @@ class SinkEdit extends Component {
               <th align="left"> <label>Name</label> </th>
               <th align="left"> <input value={this.state.name} onChange={e => this.setState({name: e.target.value, nameErr: !e.currentTarget.checkValidity()})} required/> </th>
             </tr>
+            <PcmPicker value={this.state.pcm} onChange={pcm => this.setState({pcm: pcm})} />
             <tr height="35">
               <th align="left"> <label>Use SDP</label> </th>
               <th align="left"> <input type="checkbox" defaultChecked={this.state.useSdp} onChange={e => this.setState({useSdp: e.target.checked})} /> </th>

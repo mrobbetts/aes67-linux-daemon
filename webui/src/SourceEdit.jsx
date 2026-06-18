@@ -24,6 +24,7 @@ import {toast} from 'react-toastify';
 import Modal from 'react-modal';
 
 import RestAPI from './Services';
+import PcmPicker from './PcmPicker';
 
 const editCustomStyles = {
   content : {
@@ -57,6 +58,7 @@ class SourceEdit extends Component {
       enabled: this.props.source.enabled,
       name: this.props.source.name,
       nameErr: false,
+      pcm: this.props.source.pcm !== undefined ? this.props.source.pcm : 0,
       io: this.props.source.io,
       codec: this.props.source.codec,
       address: this.props.source.address,
@@ -111,6 +113,7 @@ class SourceEdit extends Component {
       this.state.dscp,
       this.state.refclkPtpTraceable,
       this.state.map,
+      this.state.pcm,
       this.props.isEdit)
     .then(function(response) {
       toast.success(message);
@@ -244,6 +247,7 @@ class SourceEdit extends Component {
               <th align="left"> <label>Name</label> </th>
               <th align="left"> <input value={this.state.name} onChange={e => this.setState({name: e.target.value, nameErr: !e.currentTarget.checkValidity()})} required/> </th>
             </tr>
+            <PcmPicker value={this.state.pcm} onChange={pcm => this.setState({pcm: pcm})} />
             <tr>
               <th align="left"> <label>Max samples per packet </label> </th>
               <th align="left">
