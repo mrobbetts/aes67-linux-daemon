@@ -237,6 +237,10 @@ class SessionManager {
    * leaves the card removed. Persistence is shutdown-only (matches streams). */
   std::error_code add_card(const Card& card);
   std::error_code remove_card(uint8_t handle);
+  /* card-level edit: rename and/or re-domain a card (recreates it, keeping its
+   * pcms + re-establishing bound streams). new_name must be non-empty + unique. */
+  std::error_code update_card(const std::string& name,
+                              const std::string& new_name, uint8_t new_domain);
   std::list<Card> get_cards() const;
   std::error_code get_card(uint8_t handle, Card& card) const;
   std::error_code get_card_by_name(const std::string& name, Card& card) const;
@@ -303,7 +307,9 @@ class SessionManager {
   int alloc_pcm_id_() const;
   std::error_code bring_up_card_(const Card& card, const std::list<Pcm>& pcms);
   std::error_code recreate_card_(const std::string& card_name,
-                                 const std::list<Pcm>& new_pcms);
+                                 const std::list<Pcm>& new_pcms,
+                                 const std::string& new_name = "",
+                                 int new_domain = -1);
   void seed_topology_from_config_(std::list<Card>& cards,
                                   std::list<Pcm>& pcms) const;
   std::list<Pcm> pcms_of_card_(const std::string& card_name) const;

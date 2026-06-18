@@ -300,6 +300,21 @@ export default class RestAPI {
     });
   }
 
+  // rename / re-domain a card (PUT). `name` is the current name (URL); the body
+  // carries the new name + domain.
+  static updateCard(name, newName, domain) {
+    return this.doFetch(card + '/' + encodeURIComponent(name), {
+      body: JSON.stringify({
+        name: newName,
+        domain: parseInt(domain, 10)
+      }),
+      method: 'PUT'
+    }).catch(err => {
+      toast.error('Update Card failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
   static addPcm(cardName, name, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay) {
     return this.doFetch(card + '/' + encodeURIComponent(cardName) + pcm, {
       body: JSON.stringify({

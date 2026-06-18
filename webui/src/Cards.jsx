@@ -41,6 +41,8 @@ class Cards extends Component {
       sinks: [],
       isLoading: false,
       cardEditIsOpen: false,
+      isCardEdit: false,
+      cardEditCard: null,
       pcmEditIsOpen: false,
       pcmEditCard: '',
       pcmEditTitle: '',
@@ -52,6 +54,7 @@ class Cards extends Component {
     this.closeCardEdit = this.closeCardEdit.bind(this);
     this.closePcmEdit = this.closePcmEdit.bind(this);
     this.onAddCard = this.onAddCard.bind(this);
+    this.onEditCard = this.onEditCard.bind(this);
     this.onRemoveCard = this.onRemoveCard.bind(this);
     this.onAddPcm = this.onAddPcm.bind(this);
     this.onEditPcm = this.onEditPcm.bind(this);
@@ -97,7 +100,11 @@ class Cards extends Component {
   }
 
   onAddCard() {
-    this.setState({cardEditIsOpen: true});
+    this.setState({cardEditIsOpen: true, isCardEdit: false, cardEditCard: null});
+  }
+
+  onEditCard(card) {
+    this.setState({cardEditIsOpen: true, isCardEdit: true, cardEditCard: card});
   }
 
   onRemoveCard(name) {
@@ -161,6 +168,9 @@ class Cards extends Component {
                     <span className='pointer-area' title='Add PCM' onClick={() => this.onAddPcm(card.name)}>
                       <img width='20' height='20' src='/plus.png' alt='+pcm'/> </span>
                     &nbsp;
+                    <span className='pointer-area' title='Edit card (rename / domain)' onClick={() => this.onEditCard(card)}>
+                      <img width='20' height='20' src='/edit.png' alt='edit'/> </span>
+                    &nbsp;
                     <span className='pointer-area' title='Remove card' onClick={() => this.onRemoveCard(card.name)}>
                       <img width='20' height='20' src='/trash.png' alt='x'/> </span>
                   </div>
@@ -209,7 +219,9 @@ class Cards extends Component {
         { this.state.cardEditIsOpen ?
           <CardEdit editIsOpen={this.state.cardEditIsOpen}
             closeEdit={this.closeCardEdit}
-            applyEdit={this.applyEdit} />
+            applyEdit={this.applyEdit}
+            isEdit={this.state.isCardEdit}
+            card={this.state.cardEditCard} />
           : undefined }
         { this.state.pcmEditIsOpen ?
           <PcmEdit editIsOpen={this.state.pcmEditIsOpen}
