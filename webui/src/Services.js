@@ -141,7 +141,7 @@ export default class RestAPI {
     });
   }
 
-  static addSource(id, enabled, name, io, max_samples_per_packet, codec, address, ttl, payload_type, dscp, refclk_ptp_traceable, map, is_edit) {
+  static addSource(id, enabled, name, io, max_samples_per_packet, codec, address, ttl, payload_type, dscp, refclk_ptp_traceable, map, pcm, is_edit) {
     return this.doFetch(source + '/' + id, {
       body: JSON.stringify({
         enabled: enabled,
@@ -150,6 +150,7 @@ export default class RestAPI {
         codec: codec,
         address: address,
         map: map,
+        pcm: parseInt(pcm, 10),
         max_samples_per_packet: parseInt(max_samples_per_packet, 10),
         ttl: parseInt(ttl, 10),
         payload_type: parseInt(payload_type, 10),
@@ -190,7 +191,7 @@ export default class RestAPI {
     });
   }
 
-  static addSink(id, name, io, delay, use_sdp, source, sdp, ignore_refclk_gmid, map, is_edit) {
+  static addSink(id, name, io, delay, use_sdp, source, sdp, ignore_refclk_gmid, map, pcm, is_edit) {
     return this.doFetch(sink + '/' + id, {
       body: JSON.stringify({
         name: name,
@@ -200,7 +201,8 @@ export default class RestAPI {
         source: source,
         sdp: sdp,
         ignore_refclk_gmid: ignore_refclk_gmid,
-        map: map
+        map: map,
+        pcm: parseInt(pcm, 10)
       }),
       method: 'PUT'
     }).catch(err => {
