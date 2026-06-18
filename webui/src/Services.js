@@ -332,9 +332,10 @@ export default class RestAPI {
     });
   }
 
-  static updatePcm(cardName, pcmName, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay) {
+  static updatePcm(cardName, pcmName, newName, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay) {
     return this.doFetch(card + '/' + encodeURIComponent(cardName) + pcm + '/' + encodeURIComponent(pcmName), {
       body: JSON.stringify({
+        name: newName,
         sample_rate: parseInt(sample_rate, 10),
         num_inputs: parseInt(num_inputs, 10),
         num_outputs: parseInt(num_outputs, 10),
