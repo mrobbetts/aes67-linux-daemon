@@ -29,6 +29,8 @@ import RestAPI from './Services';
 // the picker resolves that to the pcm_id the daemon binds streams by. Renders
 // two <tr> rows for embedding directly inside an edit form's <tbody>.
 //
+// onChange receives the full selected pcm object (so the parent can bound its
+// channel map by num_inputs/num_outputs), not just the pcm_id.
 class PcmPicker extends Component {
   static propTypes = {
     value: PropTypes.number,        // current pcm_id
@@ -50,9 +52,11 @@ class PcmPicker extends Component {
     ]).then(([c, p]) => {
       const pcms = p.pcms || [];
       this.setState({ cards: c.cards || [], pcms: pcms });
-      // if the current value doesn't resolve to a live pcm, snap to the first one
-      if (pcms.length > 0 && !pcms.find(x => x.pcm_id === this.props.value)) {
-        this.props.onChange(pcms[0].pcm_id);
+      // always report the resolved pcm on load (snapping to the first one if the
+      // current value is stale) so the parent learns its channel counts.
+      const pcm = pcms.find(x => x.pcm_id === this.props.value) || pcms[0];
+      if (pcm) {
+        this.props.onChange(pcm);
       }
     }).catch(() => {});
   }
@@ -66,12 +70,15 @@ class PcmPicker extends Component {
     const card = e.target.value;
     const first = this.state.pcms.find(x => x.card === card);
     if (first) {
-      this.props.onChange(first.pcm_id);
+      this.props.onChange(first);
     }
   }
 
   onChangePcm(e) {
-    this.props.onChange(parseInt(e.target.value, 10));
+    const pcm = this.state.pcms.find(x => x.pcm_id === parseInt(e.target.value, 10));
+    if (pcm) {
+      this.props.onChange(pcm);
+    }
   }
 
   render() {

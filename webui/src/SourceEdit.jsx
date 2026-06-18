@@ -59,6 +59,7 @@ class SourceEdit extends Component {
       name: this.props.source.name,
       nameErr: false,
       pcm: this.props.source.pcm !== undefined ? this.props.source.pcm : 0,
+      pcmChannels: 64,  // the selected pcm's output count; updated by the picker
       io: this.props.source.io,
       codec: this.props.source.codec,
       address: this.props.source.address,
@@ -85,6 +86,7 @@ class SourceEdit extends Component {
     this.addSource = this.addSource.bind(this);
     this.onChangeChannels = this.onChangeChannels.bind(this);
     this.onChangeChannelsMap = this.onChangeChannelsMap.bind(this);
+    this.onChangePcm = this.onChangePcm.bind(this);
     this.onChangeMaxSamplesPerPacket = this.onChangeMaxSamplesPerPacket.bind(this);
     this.onChangeCodec = this.onChangeCodec.bind(this);
     this.inputIsValid = this.inputIsValid.bind(this);
@@ -151,11 +153,28 @@ class SourceEdit extends Component {
     this.setState({ codec: codec, maxChannels: maxChannels, channelsErr: this.state.channels > maxChannels });
   }
 
+  // the picker reports the full selected pcm; a source maps to the card's ALSA
+  // OUTPUT channels, so bound the map by num_outputs. Reset the map if it no
+  // longer fits (e.g. switching to a smaller pcm).
+  onChangePcm(pcm) {
+    const pcmChannels = pcm.num_outputs;
+    let channels = this.state.channels;
+    let map = this.state.map;
+    if (channels > pcmChannels || (map.length > 0 && map[map.length - 1] >= pcmChannels)) {
+      channels = Math.max(1, Math.min(channels, pcmChannels));
+      map = [];
+      for (let v = 0; v < channels; v++) { map.push(v); }
+    }
+    let audioMap = [];
+    for (let v = 0; v <= (pcmChannels - channels); v += 1) { audioMap.push(v); }
+    this.setState({ pcm: pcm.pcm_id, pcmChannels: pcmChannels, channels: channels, map: map, audioMap: audioMap });
+  }
+
   onChangeChannels(e) {
     if (e.currentTarget.checkValidity()) {
       let channels = parseInt(e.target.value, 10);
       let audioMap = [], map = [], v;
-      for (v = 0; v <= (64 - channels); v += 1) {
+      for (v = 0; v <= (this.state.pcmChannels - channels); v += 1) {
         audioMap.push(v);
       }
       for (v = 0; v < channels; v++) {
@@ -247,7 +266,7 @@ class SourceEdit extends Component {
               <th align="left"> <label>Name</label> </th>
               <th align="left"> <input value={this.state.name} onChange={e => this.setState({name: e.target.value, nameErr: !e.currentTarget.checkValidity()})} required/> </th>
             </tr>
-            <PcmPicker value={this.state.pcm} onChange={pcm => this.setState({pcm: pcm})} />
+            <PcmPicker value={this.state.pcm} onChange={this.onChangePcm} />
             <tr>
               <th align="left"> <label>Max samples per packet </label> </th>
               <th align="left">
@@ -302,7 +321,7 @@ class SourceEdit extends Component {
             </tr>
             <tr>
               <th align="left"> <label>Channels</label> </th>
-              <th align="left"> <input type='number' min='1' max={this.state.maxChannels} className='input-number' value={this.state.channels} onChange={this.onChangeChannels} required/> </th>
+              <th align="left"> <input type='number' min='1' max={Math.min(this.state.maxChannels, this.state.pcmChannels)} className='input-number' value={this.state.channels} onChange={this.onChangeChannels} required/> </th>
             </tr>
             <tr>
               <th align="left">Audio Channels map</th>

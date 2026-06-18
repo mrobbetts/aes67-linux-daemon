@@ -55,6 +55,7 @@ class SinkEdit extends Component {
       name: this.props.sink.name,
       nameErr: false,
       pcm: this.props.sink.pcm !== undefined ? this.props.sink.pcm : 0,
+      pcmChannels: 64,  // the selected pcm's input count; updated by the picker
       io: this.props.sink.io,
       delay: this.props.sink.delay,
       ignoreRefclkGmid: this.props.sink.ignore_refclk_gmid,
@@ -75,6 +76,7 @@ class SinkEdit extends Component {
     this.addSink = this.addSink.bind(this);
     this.onChangeChannels = this.onChangeChannels.bind(this);
     this.onChangeChannelsMap = this.onChangeChannelsMap.bind(this);
+    this.onChangePcm = this.onChangePcm.bind(this);
     this.inputIsValid = this.inputIsValid.bind(this);
     this.fetchRemoteSources = this.fetchRemoteSources.bind(this);
     this.onChangeRemoteSourceSDP = this.onChangeRemoteSourceSDP.bind(this);
@@ -119,11 +121,28 @@ class SinkEdit extends Component {
     this.props.closeEdit();
   }
 
+  // the picker reports the full selected pcm; a sink maps to the card's ALSA
+  // INPUT channels, so bound the map by num_inputs. Reset the map if it no
+  // longer fits (e.g. switching to a smaller pcm).
+  onChangePcm(pcm) {
+    const pcmChannels = pcm.num_inputs;
+    let channels = this.state.channels;
+    let map = this.state.map;
+    if (channels > pcmChannels || (map.length > 0 && map[map.length - 1] >= pcmChannels)) {
+      channels = Math.max(1, Math.min(channels, pcmChannels));
+      map = [];
+      for (let v = 0; v < channels; v++) { map.push(v); }
+    }
+    let audioMap = [];
+    for (let v = 0; v <= (pcmChannels - channels); v += 1) { audioMap.push(v); }
+    this.setState({ pcm: pcm.pcm_id, pcmChannels: pcmChannels, channels: channels, map: map, audioMap: audioMap });
+  }
+
   onChangeChannels(e) {
     if (e.currentTarget.checkValidity()) {
       let channels = parseInt(e.target.value, 10);
       let audioMap = [], map = [], v;
-      for (v = 0; v <= (64 - channels); v += 1) {
+      for (v = 0; v <= (this.state.pcmChannels - channels); v += 1) {
         audioMap.push(v);
       }
       for (v = 0; v < channels; v++) {
@@ -173,7 +192,7 @@ class SinkEdit extends Component {
               <th align="left"> <label>Name</label> </th>
               <th align="left"> <input value={this.state.name} onChange={e => this.setState({name: e.target.value, nameErr: !e.currentTarget.checkValidity()})} required/> </th>
             </tr>
-            <PcmPicker value={this.state.pcm} onChange={pcm => this.setState({pcm: pcm})} />
+            <PcmPicker value={this.state.pcm} onChange={this.onChangePcm} />
             <tr height="35">
               <th align="left"> <label>Use SDP</label> </th>
               <th align="left"> <input type="checkbox" defaultChecked={this.state.useSdp} onChange={e => this.setState({useSdp: e.target.checked})} /> </th>
@@ -215,7 +234,7 @@ class SinkEdit extends Component {
             </tr>
             <tr>
               <th align="left"> <label>Channels</label> </th>
-              <th align="left"> <input type='number' min='1' max='64' className='input-number' value={this.state.channels} onChange={this.onChangeChannels} required/> </th>
+              <th align="left"> <input type='number' min='1' max={this.state.pcmChannels} className='input-number' value={this.state.channels} onChange={this.onChangeChannels} required/> </th>
             </tr>
             <tr>
               <th align="left">Audio Channels map</th>
