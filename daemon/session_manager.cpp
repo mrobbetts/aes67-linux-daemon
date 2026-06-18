@@ -27,10 +27,13 @@
 #include <boost/foreach.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <algorithm>
 #include <chrono>
 #include <experimental/map>
 #include <iostream>
 #include <map>
+#include <set>
+#include <vector>
 
 #include "json.hpp"
 #include "log.hpp"
@@ -441,79 +444,94 @@ int SessionManager::alloc_card_handle_() const {
   return -1;
 }
 
-int SessionManager::alloc_card_pcm_() const {
-  /* caller holds cards_mutex_ */
+int SessionManager::alloc_pcm_id_() const {
+  /* caller holds cards_mutex_. pcm_ids are global across all cards. */
   for (uint8_t p = 0; p < pcm_id_max; ++p) {
-    bool used = false;
-    for (const auto& [handle, card] : cards_) {
-      (void)handle;
-      if (card.pcm == p) {
-        used = true;
-        break;
-      }
-    }
-    if (!used) {
+    if (pcms_.find(p) == pcms_.end()) {
       return p;
     }
   }
   return -1;
 }
 
-std::error_code SessionManager::bring_up_card_(const Card& card) {
-  /* caller holds cards_mutex_ (unique). Brings the card up in the kernel using
-   * card.handle/card.pcm AS GIVEN (no allocation) -- so it serves both the
-   * runtime add_card (after it allocates) and load-time rehydration/seeding
-   * (which carries the persisted handle+pcm). Inserts into cards_ on success;
-   * leaves cards_ unchanged and unwinds the kernel card on failure. */
-  uint32_t rate =
-      card.sample_rate ? card.sample_rate : config_->get_sample_rate();
-  /* deferred-register sequence the kernel expects: add_card ->
-   * add_pcm_to_card -> register_card so the card appears to userspace with its
-   * PCM already attached. Unwind on failure. */
+std::list<Pcm> SessionManager::pcms_of_card_(const std::string& card_name) const {
+  /* caller holds cards_mutex_. pcms_ is keyed by pcm_id, so iteration is in
+   * pcm_id order -- which is the add-order / ALSA device-index order. */
+  std::list<Pcm> list;
+  for (const auto& [pcm_id, pcm] : pcms_) {
+    (void)pcm_id;
+    if (pcm.card == card_name) {
+      list.push_back(pcm);
+    }
+  }
+  return list;
+}
+
+std::error_code SessionManager::bring_up_card_(const Card& card,
+                                               const std::list<Pcm>& pcms) {
+  /* caller holds cards_mutex_ (unique). Brings the card up with its full pcm set
+   * using the handle/pcm_ids AS GIVEN (no allocation) -- serves runtime add
+   * (after it allocates) and load-time rehydration/seeding (persisted ids).
+   * Deferred-register: add_card -> add_pcm_to_card x N -> register_card. PCMs are
+   * added in pcm_id order so the kernel's per-card device index lines up with
+   * device_index_of(). Inserts card + pcms into the maps on success; unwinds the
+   * kernel card on failure. */
   if (auto ec = driver_->add_card(card.handle, card.name, card.domain)) {
-    BOOST_LOG_TRIVIAL(error) << "session_manager:: add_card driver add_card "
-                                "failed: " << ec.message();
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: bring_up_card add_card failed: " << ec.message();
     return ec;
   }
-  if (auto ec = driver_->add_pcm_to_card(card.handle, card.pcm, rate,
-                                         card.num_inputs, card.num_outputs,
-                                         card.name)) {
-    BOOST_LOG_TRIVIAL(error)
-        << "session_manager:: add_card add_pcm_to_card failed: " << ec.message();
-    (void)driver_->remove_card(card.handle);
-    return ec;
+  std::vector<Pcm> ordered(pcms.begin(), pcms.end());
+  std::sort(ordered.begin(), ordered.end(),
+            [](const Pcm& a, const Pcm& b) { return a.pcm_id < b.pcm_id; });
+  for (const auto& pcm : ordered) {
+    uint32_t rate =
+        pcm.sample_rate ? pcm.sample_rate : config_->get_sample_rate();
+    if (auto ec = driver_->add_pcm_to_card(card.handle, pcm.pcm_id, rate,
+                                           pcm.num_inputs, pcm.num_outputs,
+                                           pcm.name)) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: bring_up_card add_pcm_to_card (card=\""
+          << card.name << "\" pcm=\"" << pcm.name
+          << "\") failed: " << ec.message();
+      (void)driver_->remove_card(card.handle);
+      return ec;
+    }
   }
   if (auto ec = driver_->register_card(card.handle)) {
     BOOST_LOG_TRIVIAL(error)
-        << "session_manager:: add_card register_card failed: " << ec.message();
+        << "session_manager:: bring_up_card register_card failed: "
+        << ec.message();
     (void)driver_->remove_card(card.handle);
     return ec;
   }
-  /* playout_delay is still manager-wide in the kernel (per-card is W9
-   * remainder): apply pcm 0's once -- this is where the old DriverManager::init
-   * set_playout_delay(0, ...) moved to, now that chip 0 exists by this point.
-   * Warn on any non-zero delay carried by other pcms. */
-  if (card.pcm == 0) {
-    if (auto ec = driver_->set_playout_delay(0, card.playout_delay)) {
+  /* playout_delay is still manager-wide in the kernel (per-pcm is W9 remainder):
+   * apply pcm_id 0's once. Warn on any non-zero delay carried by other pcms. */
+  for (const auto& pcm : ordered) {
+    if (pcm.pcm_id == 0) {
+      if (auto ec = driver_->set_playout_delay(0, pcm.playout_delay)) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "session_manager:: set_playout_delay failed: " << ec.message();
+      }
+    } else if (pcm.playout_delay != 0) {
       BOOST_LOG_TRIVIAL(warning)
-          << "session_manager:: set_playout_delay failed: " << ec.message();
+          << "session_manager:: per-pcm playout_delay not supported yet; "
+             "ignoring playout_delay=" << pcm.playout_delay << " on pcm \""
+          << pcm.name << "\" (pcm_id " << (int)pcm.pcm_id << ")";
     }
-  } else if (card.playout_delay != 0) {
-    BOOST_LOG_TRIVIAL(warning)
-        << "session_manager:: per-card playout_delay not supported yet; "
-           "ignoring playout_delay=" << card.playout_delay
-        << " on card handle=" << (int)card.handle << " pcm=" << (int)card.pcm;
   }
   cards_[card.handle] = card;
+  for (const auto& pcm : ordered) {
+    pcms_[pcm.pcm_id] = pcm;
+  }
   return std::error_code{};
 }
 
 std::error_code SessionManager::add_card(const Card& spec) {
   Card card = spec;
   std::unique_lock cards_lock(cards_mutex_);
-  /* the name is the card's durable identity (the REST/WebUI layer addresses
-   * cards by name, and it is the kernel's hw:<name> ALSA id) -- require it
-   * non-empty and unique. */
+  /* the name is the card's durable identity (REST addresses cards by name, and
+   * it is the kernel's hw:<name> ALSA id) -- require it non-empty and unique. */
   if (card.name.empty()) {
     BOOST_LOG_TRIVIAL(error) << "session_manager:: add_card: empty card name";
     return DaemonErrc::invalid_card_name;
@@ -527,53 +545,52 @@ std::error_code SessionManager::add_card(const Card& spec) {
     }
   }
   int handle = alloc_card_handle_();
-  int pcm = alloc_card_pcm_();
-  if (handle < 0 || pcm < 0) {
+  if (handle < 0) {
     BOOST_LOG_TRIVIAL(error)
-        << "session_manager:: add_card: no free "
-        << (handle < 0 ? "card handle" : "pcm id")
-        << " (card_handle_max=" << (int)card_handle_max
-        << " pcm_id_max=" << (int)pcm_id_max << ")";
+        << "session_manager:: add_card: no free card handle (max "
+        << (int)card_handle_max << ")";
     return DaemonErrc::card_slots_exhausted;
   }
   card.handle = static_cast<uint8_t>(handle);
-  card.pcm = static_cast<uint8_t>(pcm);
-  if (auto ec = bring_up_card_(card)) {
+  /* a card is created EMPTY -- PCMs are added via add_pcm (which recreates it
+   * with the PCM attached). The kernel registers a zero-PCM card fine. */
+  if (auto ec = bring_up_card_(card, {})) {
     return ec;
   }
-  /* persistence follows the codebase convention: mutators don't write
-   * status.json; it is captured only at shutdown (main.cpp save_status, before
-   * terminate tears the cards down) -- exactly like add_source/add_sink, which
-   * also don't persist on mutation. status.json is a between-restarts store,
-   * not a live mirror. (Caveat for slice 2: unlike streams, a runtime-added
-   * card has no SAP/mDNS auto-rediscovery, so it is lost on an *unclean* exit;
-   * acceptable for now to match streams, revisit if it bites.) */
+  /* persistence is shutdown-only (matches add_source/add_sink; see remove_card).
+   */
   BOOST_LOG_TRIVIAL(info) << "session_manager:: added card handle="
-                          << (int)card.handle << " pcm=" << (int)card.pcm
-                          << " name=\"" << card.name << "\"";
+                          << (int)card.handle << " name=\"" << card.name
+                          << "\" domain=" << (int)card.domain;
   return std::error_code{};
 }
 
 std::error_code SessionManager::remove_card(uint8_t handle) {
-  uint8_t pcm;
+  std::string card_name;
+  std::set<uint8_t> pcm_ids;
   {
     std::shared_lock cards_lock(cards_mutex_);
     auto it = cards_.find(handle);
     if (it == cards_.end()) {
       return DaemonErrc::invalid_card_handle;
     }
-    pcm = it->second.pcm;
+    card_name = it->second.name;
+    for (const auto& [pid, pcm] : pcms_) {
+      if (pcm.card == card_name) {
+        pcm_ids.insert(pid);
+      }
+    }
   }
-  /* cascade: drop the streams bound to this card's pcm before tearing it down.
-   * get_sources()/get_sinks() return copies, so mutating via remove_* while we
-   * iterate is safe; remove_* take their own source/sink locks. */
+  /* cascade: drop the streams bound to ANY of this card's pcms before tearing it
+   * down. get_sources()/get_sinks() return copies, so mutating via remove_*
+   * while we iterate is safe; remove_* take their own source/sink locks. */
   for (const auto& source : get_sources()) {
-    if (source.pcm == pcm) {
+    if (pcm_ids.count(source.pcm)) {
       remove_source(source.id);
     }
   }
   for (const auto& sink : get_sinks()) {
-    if (sink.pcm == pcm) {
+    if (pcm_ids.count(sink.pcm)) {
       remove_sink(sink.id);
     }
   }
@@ -589,92 +606,247 @@ std::error_code SessionManager::remove_card(uint8_t handle) {
           << ec.message();
     }
     cards_.erase(it);
+    for (auto pit = pcms_.begin(); pit != pcms_.end();) {
+      if (pit->second.card == card_name) {
+        pit = pcms_.erase(pit);
+      } else {
+        ++pit;
+      }
+    }
   }
   /* persistence is captured at shutdown / by the REST handler (see add_card). */
   BOOST_LOG_TRIVIAL(info) << "session_manager:: removed card handle="
-                          << (int)handle;
+                          << (int)handle << " (\"" << card_name << "\")";
   return std::error_code{};
 }
 
-std::error_code SessionManager::recreate_card(const std::string& name,
-                                              const Card& new_params) {
-  Card old_card;
-  if (auto ec = get_card_by_name(name, old_card)) {
-    return ec;  // not found
+std::error_code SessionManager::recreate_card_(const std::string& card_name,
+                                               const std::list<Pcm>& new_pcms) {
+  /* the generic recreate engine behind add_pcm/remove_pcm/update_pcm: rebuild
+   * `card_name` to hold exactly `new_pcms` (each carrying its pcm_id -- survivors
+   * keep theirs, so stream FKs stay valid), re-establishing the streams that
+   * were bound. Best-effort (remove-then-add forced by name-uniqueness): a
+   * failed rebuild leaves the card removed. */
+  uint8_t old_handle;
+  uint8_t domain;
+  std::set<uint8_t> old_pcm_ids;
+  {
+    std::shared_lock cards_lock(cards_mutex_);
+    const Card* card = nullptr;
+    for (const auto& [h, c] : cards_) {
+      (void)h;
+      if (c.name == card_name) {
+        card = &c;
+        break;
+      }
+    }
+    if (!card) {
+      return DaemonErrc::invalid_card_name;
+    }
+    old_handle = card->handle;
+    domain = card->domain;
+    for (const auto& [pid, pcm] : pcms_) {
+      if (pcm.card == card_name) {
+        old_pcm_ids.insert(pid);
+      }
+    }
   }
-  const uint8_t old_pcm = old_card.pcm;
 
-  /* capture the streams bound to this card (full copies) so we can
-   * re-establish them after the recreate. get_sources()/get_sinks() return the
-   * same shape that persists+reloads cleanly, so re-adding them is the proven
-   * load path. */
+  /* capture the streams currently bound to any of this card's pcms. */
   std::list<StreamSource> bound_sources;
   for (const auto& s : get_sources()) {
-    if (s.pcm == old_pcm) {
+    if (old_pcm_ids.count(s.pcm)) {
       bound_sources.push_back(s);
     }
   }
   std::list<StreamSink> bound_sinks;
   for (const auto& s : get_sinks()) {
-    if (s.pcm == old_pcm) {
+    if (old_pcm_ids.count(s.pcm)) {
       bound_sinks.push_back(s);
     }
   }
 
-  /* tear down the old card (cascade-removes the bound streams). */
-  if (auto ec = remove_card(old_card.handle)) {
+  /* tear the card down (cascade-removes its pcms + bound streams). */
+  if (auto ec = remove_card(old_handle)) {
     return ec;
   }
 
-  /* bring up the replacement under the same name (identity = URL name; the
-   * body's name, if any, is ignored). Best-effort: on failure the card is gone
-   * and its streams dropped -- log loudly. */
-  Card fresh = new_params;
-  fresh.name = name;
-  if (auto ec = add_card(fresh)) {
-    BOOST_LOG_TRIVIAL(error)
-        << "session_manager:: recreate_card \"" << name
-        << "\": replacement add failed (" << ec.message() << ") -- card and its "
-        << (bound_sources.size() + bound_sinks.size())
-        << " stream(s) are now removed";
-    return ec;
+  /* rebuild it with the new pcm set (same name + domain; reuse a handle). */
+  {
+    std::unique_lock cards_lock(cards_mutex_);
+    int handle = alloc_card_handle_();
+    if (handle < 0) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: recreate_card \"" << card_name
+          << "\": no free card handle -- card and its streams are now removed";
+      return DaemonErrc::card_slots_exhausted;
+    }
+    Card card;
+    card.handle = static_cast<uint8_t>(handle);
+    card.name = card_name;
+    card.domain = domain;
+    std::list<Pcm> pcms = new_pcms;
+    for (auto& p : pcms) {
+      p.card = card_name;
+    }
+    if (auto ec = bring_up_card_(card, pcms)) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: recreate_card \"" << card_name
+          << "\": rebuild failed (" << ec.message()
+          << ") -- card and its streams are now removed";
+      return ec;
+    }
   }
 
-  /* re-point the captured streams at the new card's pcm (recreate usually
-   * recycles the same slot, but not always) and re-establish each through the
-   * normal validated path -- streams that no longer fit (e.g. a sink whose SDP
-   * rate != the new card rate) are dropped with a logged warning. */
-  Card created;
-  (void)get_card_by_name(name, created);
-  const uint8_t new_pcm = created.pcm;
+  /* re-establish the captured streams whose pcm survived (pcm_id still present);
+   * streams on a removed pcm are dropped, and a stream that no longer fits
+   * (e.g. a sink whose SDP rate != its pcm's new rate) is dropped by the normal
+   * validated path. Surviving pcm_ids are preserved, so no re-pointing. */
+  std::set<uint8_t> new_pcm_ids;
+  for (const auto& p : new_pcms) {
+    new_pcm_ids.insert(p.pcm_id);
+  }
   int reestablished = 0, dropped = 0;
-  for (auto src : bound_sources) {
-    src.pcm = new_pcm;
+  for (const auto& src : bound_sources) {
+    if (!new_pcm_ids.count(src.pcm)) {
+      ++dropped;
+      continue;
+    }
     if (auto ec = add_source(src)) {
       BOOST_LOG_TRIVIAL(warning)
-          << "session_manager:: recreate_card \"" << name << "\": source "
+          << "session_manager:: recreate_card \"" << card_name << "\": source "
           << (int)src.id << " not re-established: " << ec.message();
       ++dropped;
     } else {
       ++reestablished;
     }
   }
-  for (auto snk : bound_sinks) {
-    snk.pcm = new_pcm;
+  for (const auto& snk : bound_sinks) {
+    if (!new_pcm_ids.count(snk.pcm)) {
+      ++dropped;
+      continue;
+    }
     if (auto ec = add_sink(snk)) {
       BOOST_LOG_TRIVIAL(warning)
-          << "session_manager:: recreate_card \"" << name << "\": sink "
+          << "session_manager:: recreate_card \"" << card_name << "\": sink "
           << (int)snk.id << " not re-established: " << ec.message();
       ++dropped;
     } else {
       ++reestablished;
     }
   }
-  BOOST_LOG_TRIVIAL(info) << "session_manager:: recreate_card \"" << name
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: recreate_card \"" << card_name
                           << "\": " << reestablished
                           << " stream(s) re-established, " << dropped
                           << " dropped";
   return std::error_code{};
+}
+
+std::error_code SessionManager::add_pcm(const std::string& card_name,
+                                        const Pcm& spec) {
+  Pcm pcm = spec;
+  pcm.card = card_name;
+  std::list<Pcm> new_pcms;
+  {
+    std::unique_lock cards_lock(cards_mutex_);
+    bool card_exists = false;
+    for (const auto& [h, c] : cards_) {
+      (void)h;
+      if (c.name == card_name) {
+        card_exists = true;
+        break;
+      }
+    }
+    if (!card_exists) {
+      return DaemonErrc::invalid_card_name;
+    }
+    if (pcm.name.empty()) {
+      BOOST_LOG_TRIVIAL(error) << "session_manager:: add_pcm: empty pcm name";
+      return DaemonErrc::invalid_pcm_name;
+    }
+    for (const auto& [pid, p] : pcms_) {
+      (void)pid;
+      if (p.card == card_name && p.name == pcm.name) {
+        BOOST_LOG_TRIVIAL(error)
+            << "session_manager:: add_pcm: pcm \"" << pcm.name
+            << "\" already exists on card \"" << card_name << "\"";
+        return DaemonErrc::pcm_name_in_use;
+      }
+    }
+    int pid = alloc_pcm_id_();
+    if (pid < 0) {
+      BOOST_LOG_TRIVIAL(error) << "session_manager:: add_pcm: no free pcm_id (max "
+                               << (int)pcm_id_max << ")";
+      return DaemonErrc::card_slots_exhausted;
+    }
+    pcm.pcm_id = static_cast<uint8_t>(pid);
+    new_pcms = pcms_of_card_(card_name);
+    new_pcms.push_back(pcm);
+  }
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: add_pcm \"" << pcm.name
+                          << "\" (pcm_id " << (int)pcm.pcm_id << ") to card \""
+                          << card_name << "\"";
+  return recreate_card_(card_name, new_pcms);
+}
+
+std::error_code SessionManager::remove_pcm(const std::string& card_name,
+                                           const std::string& pcm_name) {
+  std::list<Pcm> new_pcms;
+  bool found = false;
+  {
+    std::shared_lock cards_lock(cards_mutex_);
+    for (const auto& [pid, p] : pcms_) {
+      (void)pid;
+      if (p.card != card_name) {
+        continue;
+      }
+      if (p.name == pcm_name) {
+        found = true;
+      } else {
+        new_pcms.push_back(p);
+      }
+    }
+  }
+  if (!found) {
+    return DaemonErrc::invalid_pcm_name;
+  }
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: remove_pcm \"" << pcm_name
+                          << "\" from card \"" << card_name << "\"";
+  return recreate_card_(card_name, new_pcms);
+}
+
+std::error_code SessionManager::update_pcm(const std::string& card_name,
+                                           const std::string& pcm_name,
+                                           const Pcm& new_params) {
+  std::list<Pcm> new_pcms;
+  bool found = false;
+  {
+    std::shared_lock cards_lock(cards_mutex_);
+    for (const auto& [pid, p] : pcms_) {
+      (void)pid;
+      if (p.card != card_name) {
+        continue;
+      }
+      if (p.name == pcm_name) {
+        found = true;
+        Pcm updated = p;  // keep pcm_id, card, name (the identity)
+        updated.sample_rate = new_params.sample_rate;
+        updated.num_inputs = new_params.num_inputs;
+        updated.num_outputs = new_params.num_outputs;
+        updated.playout_delay = new_params.playout_delay;
+        updated.capture_delay = new_params.capture_delay;
+        new_pcms.push_back(updated);
+      } else {
+        new_pcms.push_back(p);
+      }
+    }
+  }
+  if (!found) {
+    return DaemonErrc::invalid_pcm_name;
+  }
+  BOOST_LOG_TRIVIAL(info) << "session_manager:: update_pcm \"" << pcm_name
+                          << "\" on card \"" << card_name << "\"";
+  return recreate_card_(card_name, new_pcms);
 }
 
 std::list<Card> SessionManager::get_cards() const {
@@ -710,58 +882,105 @@ std::error_code SessionManager::get_card_by_name(const std::string& name,
   return DaemonErrc::invalid_card_name;
 }
 
-bool SessionManager::card_for_pcm_(uint8_t pcm, Card& out) const {
+std::list<Pcm> SessionManager::get_pcms() const {
   std::shared_lock cards_lock(cards_mutex_);
-  for (const auto& [handle, card] : cards_) {
-    (void)handle;
-    if (card.pcm == pcm) {
-      out = card;
-      return true;
+  std::list<Pcm> list;
+  for (const auto& [pid, pcm] : pcms_) {
+    (void)pid;
+    list.push_back(pcm);
+  }
+  return list;
+}
+
+std::error_code SessionManager::get_pcm_by_name(const std::string& card_name,
+                                                const std::string& pcm_name,
+                                                Pcm& pcm) const {
+  std::shared_lock cards_lock(cards_mutex_);
+  for (const auto& [pid, p] : pcms_) {
+    (void)pid;
+    if (p.card == card_name && p.name == pcm_name) {
+      pcm = p;
+      return std::error_code{};
     }
   }
-  return false;
+  return DaemonErrc::invalid_pcm_name;
 }
 
-bool SessionManager::pcm_declared_(uint8_t pcm) const {
-  Card card;
-  return card_for_pcm_(pcm, card);
-}
-
-uint32_t SessionManager::rate_for_pcm_(uint8_t pcm) const {
-  Card card;
-  if (card_for_pcm_(pcm, card) && card.sample_rate) {
-    return card.sample_rate;
+int SessionManager::device_index_of(uint8_t pcm_id) const {
+  std::shared_lock cards_lock(cards_mutex_);
+  auto it = pcms_.find(pcm_id);
+  if (it == pcms_.end()) {
+    return -1;
   }
-  /* unknown pcm (validation rejects those) or a card that inherits the
+  const std::string card_name = it->second.card;
+  int idx = 0;
+  /* pcms_ iterates in pcm_id order, matching bring_up_card_'s add order. */
+  for (const auto& [pid, p] : pcms_) {
+    if (p.card != card_name) {
+      continue;
+    }
+    if (pid == pcm_id) {
+      return idx;
+    }
+    ++idx;
+  }
+  return -1;
+}
+
+bool SessionManager::pcm_for_id_(uint8_t pcm_id, Pcm& out) const {
+  std::shared_lock cards_lock(cards_mutex_);
+  auto it = pcms_.find(pcm_id);
+  if (it == pcms_.end()) {
+    return false;
+  }
+  out = it->second;
+  return true;
+}
+
+bool SessionManager::pcm_declared_(uint8_t pcm_id) const {
+  Pcm pcm;
+  return pcm_for_id_(pcm_id, pcm);
+}
+
+uint32_t SessionManager::rate_for_pcm_(uint8_t pcm_id) const {
+  Pcm pcm;
+  if (pcm_for_id_(pcm_id, pcm) && pcm.sample_rate) {
+    return pcm.sample_rate;
+  }
+  /* unknown pcm (validation rejects those) or a pcm that inherits the
    * manager-wide default rate. */
   return config_->get_sample_rate();
 }
 
-std::list<Card> SessionManager::seed_cards_from_config_() const {
-  /* First-boot / no-persisted-cards fallback: one card per configured device
-   * group, replicating the old DriverManager::init mapping (handle = group
-   * enumeration order, pcm = group id) so any pre-existing status.json streams
-   * keep their pcm FK valid. */
-  std::list<Card> cards;
+void SessionManager::seed_topology_from_config_(std::list<Card>& cards,
+                                                std::list<Pcm>& pcms) const {
+  /* First-boot / no-persisted-topology fallback: one card + one "default" pcm
+   * per configured device group (handle = group enumeration order, pcm_id =
+   * group id) so any pre-existing status.json streams keep their pcm FK valid. */
   uint8_t handle = 0;
   for (const auto& g : config_->get_device_groups()) {
     Card card;
     card.handle = handle++;
-    card.pcm = g.id;
     card.name = g.name;
     card.domain = g.domain;
-    card.sample_rate = config_->rate_for_group(g.id);
-    card.num_inputs = g.num_inputs;
-    card.num_outputs = g.num_outputs;
-    card.playout_delay = g.playout_delay;
-    card.capture_delay = g.capture_delay;
     cards.push_back(card);
+
+    Pcm pcm;
+    pcm.pcm_id = g.id;
+    pcm.card = g.name;
+    pcm.name = "default";
+    pcm.sample_rate = config_->rate_for_group(g.id);
+    pcm.num_inputs = g.num_inputs;
+    pcm.num_outputs = g.num_outputs;
+    pcm.playout_delay = g.playout_delay;
+    pcm.capture_delay = g.capture_delay;
+    pcms.push_back(pcm);
   }
-  return cards;
 }
 
 bool SessionManager::load_status() {
   std::list<Card> cards_list;
+  std::list<Pcm> pcms_list;
   std::list<StreamSource> sources_list;
   std::list<StreamSink> sinks_list;
 
@@ -772,7 +991,8 @@ bool SessionManager::load_status() {
     std::ifstream jsonstream(config_->get_status_file());
     if (jsonstream) {
       try {
-        json_to_status(jsonstream, cards_list, sources_list, sinks_list);
+        json_to_status(jsonstream, cards_list, pcms_list, sources_list,
+                       sinks_list);
       } catch (const std::runtime_error& e) {
         BOOST_LOG_TRIVIAL(fatal)
             << "session_manager:: cannot parse status file " << e.what();
@@ -780,24 +1000,38 @@ bool SessionManager::load_status() {
       }
     } else {
       BOOST_LOG_TRIVIAL(info)
-          << "session_manager:: no status file yet, seeding cards from config";
+          << "session_manager:: no status file yet, seeding topology from "
+             "config";
     }
   }
 
-  /* W10.2: the SessionManager owns the cards now (DriverManager::init no longer
-   * creates them). Bring up the persisted set, or seed one card per device
-   * group on first boot. Cards must come up BEFORE sources/sinks, which
-   * reference them by pcm. */
-  if (cards_list.empty()) {
-    cards_list = seed_cards_from_config_();
+  /* W10.2: the SessionManager owns the card+pcm topology now (DriverManager::init
+   * no longer creates them). Bring up the persisted set, or seed card+pcm per
+   * device group on first boot. Cards must come up BEFORE sources/sinks, which
+   * reference their pcms by pcm_id. A card with no pcms is brought up empty.
+   *
+   * Re-seed from config when there are NO pcms at all -- covers first boot AND
+   * migration from a pre-pcm-split status.json (which has cards but no "pcms",
+   * so their rate/channels live only in config). A live config always has >=1
+   * device group, so this can't strand a real setup; the degenerate
+   * all-empty-cards state is rebuilt from config rather than left pcm-less. */
+  if (pcms_list.empty()) {
+    cards_list.clear();
+    seed_topology_from_config_(cards_list, pcms_list);
   }
   {
     std::unique_lock cards_lock(cards_mutex_);
     for (const auto& card : cards_list) {
-      if (auto ec = bring_up_card_(card)) {
+      std::list<Pcm> card_pcms;
+      for (const auto& pcm : pcms_list) {
+        if (pcm.card == card.name) {
+          card_pcms.push_back(pcm);
+        }
+      }
+      if (auto ec = bring_up_card_(card, card_pcms)) {
         BOOST_LOG_TRIVIAL(error)
-            << "session_manager:: load_status: card handle=" << (int)card.handle
-            << " pcm=" << (int)card.pcm << " bring-up failed: " << ec.message();
+            << "session_manager:: load_status: card \"" << card.name
+            << "\" bring-up failed: " << ec.message();
       }
     }
   }
@@ -823,7 +1057,8 @@ bool SessionManager::save_status() const {
                              << config_->get_status_file();
     return false;
   }
-  jsonstream << status_to_json(get_cards(), get_sources(), get_sinks());
+  jsonstream << status_to_json(get_cards(), get_pcms(), get_sources(),
+                               get_sinks());
   BOOST_LOG_TRIVIAL(info) << "session_manager:: status file saved";
 
   return true;

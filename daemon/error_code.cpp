@@ -138,7 +138,11 @@ std::string DaemonErrCategory::message(int ev) const {
     case DaemonErrc::card_name_in_use:
       return "a card with this name already exists";
     case DaemonErrc::invalid_card_name:
-      return "card name is empty or invalid";
+      return "card name is empty/invalid or the card was not found";
+    case DaemonErrc::pcm_name_in_use:
+      return "a pcm with this name already exists on the card";
+    case DaemonErrc::invalid_pcm_name:
+      return "pcm name is empty/invalid or the pcm was not found";
     default:
       return "(unrecognized daemon error)";
   }

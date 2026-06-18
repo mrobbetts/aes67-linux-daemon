@@ -68,27 +68,42 @@ struct StreamSink {
   uint8_t pcm{0};
 };
 
-/* W10.2 runtime multi-card: a Card is one ALSA card holding (for now) a single
- * PCM. The card set is runtime state owned by the SessionManager and persisted
- * to status.json (seeded from daemon.conf device_groups on first boot). `handle`
- * is the kernel card slot [0, card_handle_max); `pcm` is the global pcm_id
- * [0, pcm_id_max) that sources/sinks reference via their own `pcm` field. The
- * flat model: card 1:1 pcm (for now), and streams carry a `pcm` FK. */
+/* W10.2 runtime multi-card. A Card is one ALSA snd_card = one PTP clock domain
+ * (a domain is NOT exclusive — several cards may share it). It holds N Pcms.
+ * Card-level attributes ONLY: rate/channels/delays live on the Pcm (the kernel
+ * sets rate per-chip via add_pcm_to_card). Runtime state owned by the
+ * SessionManager, persisted to status.json (seeded from daemon.conf
+ * device_groups on first boot). Addressed by `name` — the durable identity and
+ * the hw:<name> ALSA id (handle is a recyclable slot). */
 struct Card {
-  uint8_t handle{0};         // kernel card slot [0, card_handle_max)
-  uint8_t pcm{0};            // global pcm_id streams reference [0, pcm_id_max)
-  std::string name;          // ALSA card id (hw:<name>)
-  uint8_t domain{0};         // PTP clock domain (W11; 0 for now)
-  uint32_t sample_rate{0};   // 0 = inherit the daemon-wide default
+  uint8_t handle{0};   // kernel card slot [0, card_handle_max); recyclable
+  std::string name;    // ALSA card id (hw:<name>); the durable identity
+  uint8_t domain{0};   // PTP clock domain (W11; not unique — cards may share)
+
+  friend bool operator==(const Card& a, const Card& b) {
+    return a.handle == b.handle && a.name == b.name && a.domain == b.domain;
+  }
+};
+
+/* A Pcm is one PCM device on a card. NAMED (unique within its card) — the
+ * user-facing handle. `pcm_id` is the GLOBAL registry slot (the manager's
+ * m_apALSAChip[] index, [0, pcm_id_max)) that streams reference via their `pcm`
+ * FK; it is INTERNAL and is NOT the ALSA per-card device index (the `Dev` in
+ * hw:<card>,<Dev>, which the daemon derives from add-order at serialization). */
+struct Pcm {
+  uint8_t pcm_id{0};        // global registry slot; the stream FK (internal)
+  std::string card;         // FK: owning card's name
+  std::string name;         // user-facing, unique within the card
+  uint32_t sample_rate{0};  // 0 = inherit the daemon-wide default
   uint32_t num_inputs{0};
   uint32_t num_outputs{0};
   int32_t playout_delay{0};
   int32_t capture_delay{0};
 
-  friend bool operator==(const Card& a, const Card& b) {
-    return a.handle == b.handle && a.pcm == b.pcm && a.name == b.name &&
-           a.domain == b.domain && a.sample_rate == b.sample_rate &&
-           a.num_inputs == b.num_inputs && a.num_outputs == b.num_outputs &&
+  friend bool operator==(const Pcm& a, const Pcm& b) {
+    return a.pcm_id == b.pcm_id && a.card == b.card && a.name == b.name &&
+           a.sample_rate == b.sample_rate && a.num_inputs == b.num_inputs &&
+           a.num_outputs == b.num_outputs &&
            a.playout_delay == b.playout_delay &&
            a.capture_delay == b.capture_delay;
   }
@@ -212,23 +227,32 @@ class SessionManager {
   std::error_code remove_sink(uint32_t id);
   uint8_t get_sink_id(const std::string& name) const;
 
-  /* W10.2 runtime cards. add_card allocates a free handle + pcm_id, brings the
-   * card up in the kernel (add_card -> add_pcm_to_card -> register_card) and
-   * persists. remove_card cascade-removes the streams bound to its pcm, tears
-   * the card down, frees the handle+pcm, and persists. */
+  /* W10.2 runtime cards + pcms. A Card is a named container (allocate a free
+   * handle, bring it up empty); Pcms are added to it. PCM add/remove/re-rate all
+   * go through recreate-card (the kernel requires PCMs added before
+   * register_card): the owning card is rebuilt with the new PCM set and its
+   * bound streams re-established (surviving PCMs keep their pcm_id, so stream FKs
+   * stay valid; a stream that no longer fits — e.g. a sink whose SDP rate != its
+   * pcm's new rate — is dropped + logged). All best-effort: a failed rebuild
+   * leaves the card removed. Persistence is shutdown-only (matches streams). */
   std::error_code add_card(const Card& card);
   std::error_code remove_card(uint8_t handle);
-  /* re-rate / re-config a card by name: capture its bound streams, remove it,
-   * re-add with new_params (keeping the URL name as the identity — body name is
-   * ignored), then re-establish the captured streams through the normal
-   * validated path (incompatible ones, e.g. a sink whose SDP rate no longer
-   * matches the new card rate, are dropped + logged). Remove-then-add is forced
-   * by name-uniqueness, so it is best-effort: a failed re-add leaves the card
-   * removed. */
-  std::error_code recreate_card(const std::string& name, const Card& new_params);
   std::list<Card> get_cards() const;
   std::error_code get_card(uint8_t handle, Card& card) const;
   std::error_code get_card_by_name(const std::string& name, Card& card) const;
+
+  std::error_code add_pcm(const std::string& card_name, const Pcm& pcm);
+  std::error_code remove_pcm(const std::string& card_name,
+                             const std::string& pcm_name);
+  std::error_code update_pcm(const std::string& card_name,
+                             const std::string& pcm_name,
+                             const Pcm& new_params);
+  std::list<Pcm> get_pcms() const;
+  std::error_code get_pcm_by_name(const std::string& card_name,
+                                  const std::string& pcm_name, Pcm& pcm) const;
+  /* the ALSA per-card device index (the Dev in hw:<card>,<Dev>) for a pcm_id =
+   * its rank (by pcm_id) among its card's pcms. -1 if the pcm_id is unknown. */
+  int device_index_of(uint8_t pcm_id) const;
 
   std::error_code set_ptp_config(const PTPConfig& config);
   std::error_code set_driver_config(std::string_view name,
@@ -267,21 +291,28 @@ class SessionManager {
   StreamSource get_source_(uint8_t id, const StreamInfo& info) const;
   StreamSink get_sink_(uint8_t id, const StreamInfo& info) const;
 
-  /* W10.2 card helpers. The alloc_ helpers scan cards_ for the lowest free slot
-   * (caller holds cards_mutex_); return -1 when full. bring_up_card_ creates the
-   * card in the kernel using its handle/pcm as given (caller holds cards_mutex_,
-   * inserts into cards_ on success). seed_cards_from_config_ builds the
-   * first-boot card set from daemon.conf device groups. */
+  /* W10.2 card/pcm helpers. The alloc_ helpers scan for the lowest free slot
+   * (caller holds cards_mutex_); -1 when full. bring_up_card_ brings a card up
+   * with its full pcm set (add_card -> add_pcm_to_card x N -> register_card),
+   * using the handles/pcm_ids as given (caller holds cards_mutex_; inserts into
+   * cards_/pcms_ on success). recreate_card_ rebuilds a card to match a new pcm
+   * set and re-establishes its bound streams (the generic engine behind
+   * add_pcm/remove_pcm/update_pcm). seed_topology_from_config_ builds the
+   * first-boot card+pcm set. pcms_of_card_ lists a card's pcms (by pcm_id). */
   int alloc_card_handle_() const;
-  int alloc_card_pcm_() const;
-  std::error_code bring_up_card_(const Card& card);
-  std::list<Card> seed_cards_from_config_() const;
-  /* pcm resolution against the runtime card set (cards_ is authoritative now —
+  int alloc_pcm_id_() const;
+  std::error_code bring_up_card_(const Card& card, const std::list<Pcm>& pcms);
+  std::error_code recreate_card_(const std::string& card_name,
+                                 const std::list<Pcm>& new_pcms);
+  void seed_topology_from_config_(std::list<Card>& cards,
+                                  std::list<Pcm>& pcms) const;
+  std::list<Pcm> pcms_of_card_(const std::string& card_name) const;
+  /* pcm resolution against the runtime pcm set (pcms_ is authoritative now —
    * NOT daemon.conf device_groups, which is only the first-boot seed). All take
    * cards_mutex_ shared; callers must NOT already hold it. */
-  bool card_for_pcm_(uint8_t pcm, Card& out) const;
-  bool pcm_declared_(uint8_t pcm) const;
-  uint32_t rate_for_pcm_(uint8_t pcm) const;
+  bool pcm_for_id_(uint8_t pcm_id, Pcm& out) const;
+  bool pcm_declared_(uint8_t pcm_id) const;
+  uint32_t rate_for_pcm_(uint8_t pcm_id) const;
 
   bool sink_is_still_valid(const std::string sdp,
                            const std::list<RemoteSource> sources_list) const;
@@ -314,9 +345,12 @@ class SessionManager {
   std::map<std::string, uint8_t /* id */> sink_names_;
   mutable std::shared_mutex sinks_mutex_;
 
-  /* W10.2 runtime cards, keyed by kernel card handle. Owned here, persisted to
-   * status.json. Guarded by its own mutex (never held across a save_status()). */
+  /* W10.2 runtime card+pcm topology. cards_ keyed by kernel card handle; pcms_
+   * keyed by global pcm_id (Pcm.card FKs its card by name). Owned here, persisted
+   * to status.json. cards_mutex_ guards BOTH maps (one lock for the whole
+   * topology); never held across a save_status(). */
   std::map<uint8_t /* handle */, Card> cards_;
+  std::map<uint8_t /* pcm_id */, Pcm> pcms_;
   mutable std::shared_mutex cards_mutex_;
 
   /* current announced sources */

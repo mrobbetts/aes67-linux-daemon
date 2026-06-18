@@ -40,11 +40,16 @@ std::string ptp_status_to_json(const PTPStatus& status);
 std::string sources_to_json(const std::list<StreamSource>& sources);
 std::string sinks_to_json(const std::list<StreamSink>& sinks);
 std::string cards_to_json(const std::list<Card>& cards);
+/* device_index >= 0 is included (the hw:<card>,<Dev> index, a read-only computed
+ * field for REST); persistence passes -1 to omit it. */
+std::string pcm_to_json(const Pcm& pcm, int device_index = -1);
+std::string pcms_to_json(const std::list<Pcm>& pcms);
 std::string streams_to_json(const std::list<StreamSource>& sources,
                             const std::list<StreamSink>& sinks);
-/* W10.2 status.json persistence: cards + streams in one document. Distinct from
- * streams_to_json (the REST /api/streams body, which stays cards-free). */
+/* W10.2 status.json persistence: cards + pcms + streams in one document.
+ * Distinct from streams_to_json (the REST /api/streams body, cards/pcms-free). */
 std::string status_to_json(const std::list<Card>& cards,
+                           const std::list<Pcm>& pcms,
                            const std::list<StreamSource>& sources,
                            const std::list<StreamSink>& sinks);
 std::string remote_source_to_json(const RemoteSource& source);
@@ -61,6 +66,7 @@ Config json_to_config(const std::string& json);
 StreamSource json_to_source(const std::string& id, const std::string& json);
 StreamSink json_to_sink(const std::string& id, const std::string& json);
 Card json_to_card(const std::string& json);
+Pcm json_to_pcm(const std::string& json);
 PTPConfig json_to_ptp_config(const std::string& json);
 void json_to_sources(std::istream& jstream, std::list<StreamSource>& sources);
 void json_to_sources(const std::string& json, std::list<StreamSource>& sources);
@@ -72,14 +78,17 @@ void json_to_streams(std::istream& jstream,
 void json_to_streams(const std::string& json,
                      std::list<StreamSource>& sources,
                      std::list<StreamSink>& sinks);
-/* W10.2 status.json: parse cards + streams. A missing "cards" array is tolerated
- * (legacy status files / first boot) so the SessionManager seeds from config. */
+/* W10.2 status.json: parse cards + pcms + streams. Missing "cards"/"pcms"
+ * arrays are tolerated (legacy status files / first boot) so the SessionManager
+ * seeds from config. */
 void json_to_status(std::istream& jstream,
                     std::list<Card>& cards,
+                    std::list<Pcm>& pcms,
                     std::list<StreamSource>& sources,
                     std::list<StreamSink>& sinks);
 void json_to_status(const std::string& json,
                     std::list<Card>& cards,
+                    std::list<Pcm>& pcms,
                     std::list<StreamSource>& sources,
                     std::list<StreamSink>& sinks);
 
