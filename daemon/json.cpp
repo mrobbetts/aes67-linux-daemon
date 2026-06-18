@@ -208,14 +208,39 @@ std::string sink_to_json(const StreamSink& sink) {
 std::string card_to_json(const Card& card) {
   std::stringstream ss;
   ss << "\n  {" << "\n    \"handle\": " << unsigned(card.handle)
-     << ",\n    \"pcm\": " << unsigned(card.pcm)
      << ",\n    \"name\": \"" << escape_json(card.name) << "\""
-     << ",\n    \"domain\": " << unsigned(card.domain)
-     << ",\n    \"sample_rate\": " << card.sample_rate
-     << ",\n    \"num_inputs\": " << card.num_inputs
-     << ",\n    \"num_outputs\": " << card.num_outputs
-     << ",\n    \"playout_delay\": " << card.playout_delay
-     << ",\n    \"capture_delay\": " << card.capture_delay << "\n  }";
+     << ",\n    \"domain\": " << unsigned(card.domain) << "\n  }";
+  return ss.str();
+}
+
+std::string pcm_to_json(const Pcm& pcm, int device_index) {
+  std::stringstream ss;
+  ss << "\n  {" << "\n    \"pcm_id\": " << unsigned(pcm.pcm_id)
+     << ",\n    \"card\": \"" << escape_json(pcm.card) << "\""
+     << ",\n    \"name\": \"" << escape_json(pcm.name) << "\""
+     << ",\n    \"sample_rate\": " << pcm.sample_rate
+     << ",\n    \"num_inputs\": " << pcm.num_inputs
+     << ",\n    \"num_outputs\": " << pcm.num_outputs
+     << ",\n    \"playout_delay\": " << pcm.playout_delay
+     << ",\n    \"capture_delay\": " << pcm.capture_delay;
+  if (device_index >= 0) {
+    ss << ",\n    \"device_index\": " << device_index;
+  }
+  ss << "\n  }";
+  return ss.str();
+}
+
+std::string pcms_to_json(const std::list<Pcm>& pcms) {
+  int count = 0;
+  std::stringstream ss;
+  ss << "{\n  \"pcms\": [";
+  for (auto const& pcm : pcms) {
+    if (count++) {
+      ss << ", ";
+    }
+    ss << pcm_to_json(pcm);
+  }
+  ss << "  ]\n}\n";
   return ss.str();
 }
 
@@ -317,6 +342,7 @@ std::string streams_to_json(const std::list<StreamSource>& sources,
 }
 
 std::string status_to_json(const std::list<Card>& cards,
+                           const std::list<Pcm>& pcms,
                            const std::list<StreamSource>& sources,
                            const std::list<StreamSink>& sinks) {
   int count = 0;
@@ -327,6 +353,14 @@ std::string status_to_json(const std::list<Card>& cards,
       ss << ", ";
     }
     ss << card_to_json(card);
+  }
+  count = 0;
+  ss << "  ],\n  \"pcms\": [";
+  for (auto const& pcm : pcms) {
+    if (count++) {
+      ss << ", ";
+    }
+    ss << pcm_to_json(pcm);
   }
   count = 0;
   ss << "  ],\n  \"sources\": [";
@@ -552,14 +586,10 @@ Config json_to_config(const std::string& json) {
 }
 
 Card json_to_card(const std::string& json) {
-  /* JSON request (handle + pcm are server-assigned, ignored if present):
+  /* JSON request — a card is card-level only (handle is server-assigned; PCMs
+   * are added separately via /api/card/:name/pcm):
     "name": "Studio",
-    "domain": 0,
-    "sample_rate": 48000,
-    "num_inputs": 2,
-    "num_outputs": 4,
-    "playout_delay": 0,
-    "capture_delay": 0
+    "domain": 0
   */
   Card card;
   try {
@@ -572,11 +602,6 @@ Card json_to_card(const std::string& json) {
        ptree "No such node (name)". */
     card.name = remove_undesired_chars(pt.get<std::string>("name", ""));
     card.domain = pt.get<uint8_t>("domain", 0);
-    card.sample_rate = pt.get<uint32_t>("sample_rate", 0);
-    card.num_inputs = pt.get<uint32_t>("num_inputs", 0);
-    card.num_outputs = pt.get<uint32_t>("num_outputs", 0);
-    card.playout_delay = pt.get<int32_t>("playout_delay", 0);
-    card.capture_delay = pt.get<int32_t>("capture_delay", 0);
   } catch (boost::property_tree::json_parser::json_parser_error& je) {
     throw std::runtime_error("error parsing JSON at line " +
                              std::to_string(je.line()) + " :" + je.message());
@@ -590,6 +615,43 @@ Card json_to_card(const std::string& json) {
     throw std::runtime_error("error parsing JSON: " + std::string(e.what()));
   }
   return card;
+}
+
+Pcm json_to_pcm(const std::string& json) {
+  /* JSON request — pcm_id + card are server/context-assigned (ignored if sent):
+    "name": "speakers",
+    "sample_rate": 48000,
+    "num_inputs": 2,
+    "num_outputs": 2,
+    "playout_delay": 0,
+    "capture_delay": 0
+  */
+  Pcm pcm;
+  try {
+    boost::property_tree::ptree pt;
+    std::stringstream ss(json);
+    boost::property_tree::read_json(ss, pt);
+
+    /* name optional at the parse layer (see json_to_card). */
+    pcm.name = remove_undesired_chars(pt.get<std::string>("name", ""));
+    pcm.sample_rate = pt.get<uint32_t>("sample_rate", 0);
+    pcm.num_inputs = pt.get<uint32_t>("num_inputs", 0);
+    pcm.num_outputs = pt.get<uint32_t>("num_outputs", 0);
+    pcm.playout_delay = pt.get<int32_t>("playout_delay", 0);
+    pcm.capture_delay = pt.get<int32_t>("capture_delay", 0);
+  } catch (boost::property_tree::json_parser::json_parser_error& je) {
+    throw std::runtime_error("error parsing JSON at line " +
+                             std::to_string(je.line()) + " :" + je.message());
+  } catch (std::invalid_argument& e) {
+    throw std::runtime_error(
+        "error parsing JSON: cannot perform number conversion");
+  } catch (std::out_of_range& e) {
+    throw std::runtime_error(
+        "error parsing JSON: number conversion out of range");
+  } catch (std::exception& e) {
+    throw std::runtime_error("error parsing JSON: " + std::string(e.what()));
+  }
+  return pcm;
 }
 
 StreamSource json_to_source(const std::string& id, const std::string& json) {
@@ -728,15 +790,31 @@ static void parse_json_cards(boost::property_tree::ptree& pt,
   BOOST_FOREACH (auto const& v, *node) {
     Card card;
     card.handle = v.second.get<uint8_t>("handle", 0);
-    card.pcm = v.second.get<uint8_t>("pcm", 0);
     card.name = v.second.get<std::string>("name", "");
     card.domain = v.second.get<uint8_t>("domain", 0);
-    card.sample_rate = v.second.get<uint32_t>("sample_rate", 0);
-    card.num_inputs = v.second.get<uint32_t>("num_inputs", 0);
-    card.num_outputs = v.second.get<uint32_t>("num_outputs", 0);
-    card.playout_delay = v.second.get<int32_t>("playout_delay", 0);
-    card.capture_delay = v.second.get<int32_t>("capture_delay", 0);
     cards.emplace_back(std::move(card));
+  }
+}
+
+static void parse_json_pcms(boost::property_tree::ptree& pt,
+                            std::list<Pcm>& pcms) {
+  /* tolerant: a status file with cards but no "pcms" (or a first boot) leaves
+   * the list empty so the SessionManager seeds from config. */
+  auto node = pt.get_child_optional("pcms");
+  if (!node) {
+    return;
+  }
+  BOOST_FOREACH (auto const& v, *node) {
+    Pcm pcm;
+    pcm.pcm_id = v.second.get<uint8_t>("pcm_id", 0);
+    pcm.card = v.second.get<std::string>("card", "");
+    pcm.name = v.second.get<std::string>("name", "");
+    pcm.sample_rate = v.second.get<uint32_t>("sample_rate", 0);
+    pcm.num_inputs = v.second.get<uint32_t>("num_inputs", 0);
+    pcm.num_outputs = v.second.get<uint32_t>("num_outputs", 0);
+    pcm.playout_delay = v.second.get<int32_t>("playout_delay", 0);
+    pcm.capture_delay = v.second.get<int32_t>("capture_delay", 0);
+    pcms.emplace_back(std::move(pcm));
   }
 }
 
@@ -840,20 +918,23 @@ void json_to_streams(std::istream& js,
 
 void json_to_status(const std::string& json,
                     std::list<Card>& cards,
+                    std::list<Pcm>& pcms,
                     std::list<StreamSource>& sources,
                     std::list<StreamSink>& sinks) {
   std::stringstream ss(json);
-  json_to_status(ss, cards, sources, sinks);
+  json_to_status(ss, cards, pcms, sources, sinks);
 }
 
 void json_to_status(std::istream& js,
                     std::list<Card>& cards,
+                    std::list<Pcm>& pcms,
                     std::list<StreamSource>& sources,
                     std::list<StreamSink>& sinks) {
   try {
     boost::property_tree::ptree pt;
     boost::property_tree::read_json(js, pt);
     parse_json_cards(pt, cards);
+    parse_json_pcms(pt, pcms);
     parse_json_sources(pt, sources);
     parse_json_sinks(pt, sinks);
   } catch (boost::property_tree::json_parser::json_parser_error& je) {

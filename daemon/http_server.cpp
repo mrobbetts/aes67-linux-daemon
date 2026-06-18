@@ -375,31 +375,7 @@ bool HttpServer::init() {
     }
   });
 
-  /* recreate a card by name (re-rate / re-config): removes + re-adds with the
-   * posted config and re-establishes the streams that were bound (incompatible
-   * ones are dropped). Body name, if any, is ignored — the URL name is the
-   * identity. */
-  svr_.Put("/api/card/([^/]+)", [this](const Request& req, Response& res) {
-    try {
-      Card card = json_to_card(req.body);
-      auto ret = session_manager_->recreate_card(req.matches[1].str(), card);
-      if (ret) {
-        set_error(ret, "failed to recreate card " + req.matches[1].str(), res);
-        return;
-      }
-      Card updated;
-      if (!session_manager_->get_card_by_name(req.matches[1].str(), updated)) {
-        set_headers(res, "application/json");
-        res.body = card_to_json(updated);
-      } else {
-        set_headers(res);
-      }
-    } catch (const std::runtime_error& e) {
-      set_error(400, e.what(), res);
-    }
-  });
-
-  /* remove a card by name (cascades the streams bound to its pcm) */
+  /* remove a card by name (cascades its pcms + their bound streams) */
   svr_.Delete("/api/card/([^/]+)", [this](const Request& req, Response& res) {
     Card card;
     auto ret = session_manager_->get_card_by_name(req.matches[1].str(), card);
@@ -414,6 +390,134 @@ bool HttpServer::init() {
       set_headers(res);
     }
   });
+
+  /* W10.2 PCMs — addressed by NAME within their card (/api/card/:card/pcm/:pcm).
+   * pcm_id is the internal global registry slot; device_index (the hw:<card>,<N>
+   * ALSA index) is a read-only computed field. add/remove/update each rebuild
+   * the owning card (recreate-card). */
+
+  /* serialise a list of pcms with their (computed) device_index */
+  auto pcms_with_dev_json = [this](const std::list<Pcm>& pcms) {
+    std::stringstream ss;
+    int count = 0;
+    ss << "{\n  \"pcms\": [";
+    for (auto const& pcm : pcms) {
+      if (count++) {
+        ss << ", ";
+      }
+      ss << pcm_to_json(pcm, session_manager_->device_index_of(pcm.pcm_id));
+    }
+    ss << "  ]\n}\n";
+    return ss.str();
+  };
+
+  /* get all pcms (across all cards) */
+  svr_.Get("/api/pcms", [this, pcms_with_dev_json](const Request& req,
+                                                   Response& res) {
+    set_headers(res, "application/json");
+    res.body = pcms_with_dev_json(session_manager_->get_pcms());
+  });
+
+  /* list a card's pcms */
+  svr_.Get("/api/card/([^/]+)/pcm",
+           [this, pcms_with_dev_json](const Request& req, Response& res) {
+             const std::string card_name = req.matches[1].str();
+             Card card;
+             if (auto ret = session_manager_->get_card_by_name(card_name, card)) {
+               set_error(ret, "card " + card_name + " not found", res);
+               return;
+             }
+             std::list<Pcm> pcms;
+             for (const auto& p : session_manager_->get_pcms()) {
+               if (p.card == card_name) {
+                 pcms.push_back(p);
+               }
+             }
+             set_headers(res, "application/json");
+             res.body = pcms_with_dev_json(pcms);
+           });
+
+  /* get one pcm by name */
+  svr_.Get("/api/card/([^/]+)/pcm/([^/]+)",
+           [this](const Request& req, Response& res) {
+             Pcm pcm;
+             auto ret = session_manager_->get_pcm_by_name(
+                 req.matches[1].str(), req.matches[2].str(), pcm);
+             if (ret) {
+               set_error(ret, "pcm " + req.matches[2].str() + " not found", res);
+             } else {
+               set_headers(res, "application/json");
+               res.body = pcm_to_json(pcm,
+                                      session_manager_->device_index_of(pcm.pcm_id));
+             }
+           });
+
+  /* add a pcm to a card (pcm_id is server-assigned; recreates the card) */
+  svr_.Post("/api/card/([^/]+)/pcm",
+            [this](const Request& req, Response& res) {
+              const std::string card_name = req.matches[1].str();
+              try {
+                Pcm pcm = json_to_pcm(req.body);
+                auto ret = session_manager_->add_pcm(card_name, pcm);
+                if (ret) {
+                  set_error(ret, "failed to add pcm " + pcm.name + " to card " +
+                                     card_name,
+                            res);
+                  return;
+                }
+                Pcm created;
+                if (!session_manager_->get_pcm_by_name(card_name, pcm.name,
+                                                       created)) {
+                  set_headers(res, "application/json");
+                  res.body = pcm_to_json(
+                      created, session_manager_->device_index_of(created.pcm_id));
+                } else {
+                  set_headers(res);
+                }
+              } catch (const std::runtime_error& e) {
+                set_error(400, e.what(), res);
+              }
+            });
+
+  /* update a pcm (re-rate / re-config; recreates the card) */
+  svr_.Put("/api/card/([^/]+)/pcm/([^/]+)",
+           [this](const Request& req, Response& res) {
+             const std::string card_name = req.matches[1].str();
+             const std::string pcm_name = req.matches[2].str();
+             try {
+               Pcm params = json_to_pcm(req.body);
+               auto ret =
+                   session_manager_->update_pcm(card_name, pcm_name, params);
+               if (ret) {
+                 set_error(ret, "failed to update pcm " + pcm_name, res);
+                 return;
+               }
+               Pcm updated;
+               if (!session_manager_->get_pcm_by_name(card_name, pcm_name,
+                                                      updated)) {
+                 set_headers(res, "application/json");
+                 res.body = pcm_to_json(
+                     updated, session_manager_->device_index_of(updated.pcm_id));
+               } else {
+                 set_headers(res);
+               }
+             } catch (const std::runtime_error& e) {
+               set_error(400, e.what(), res);
+             }
+           });
+
+  /* remove a pcm (recreates the card without it; drops its streams) */
+  svr_.Delete("/api/card/([^/]+)/pcm/([^/]+)",
+              [this](const Request& req, Response& res) {
+                auto ret = session_manager_->remove_pcm(req.matches[1].str(),
+                                                        req.matches[2].str());
+                if (ret) {
+                  set_error(ret, "failed to remove pcm " + req.matches[2].str(),
+                            res);
+                } else {
+                  set_headers(res);
+                }
+              });
 
   /* get remote sources */
   svr_.Get("/api/browse/sources/(all|mdns|sap)",

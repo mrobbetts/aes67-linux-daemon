@@ -63,13 +63,18 @@ enum class DaemonErrc {
   card_slots_exhausted = 55,  // no free card handle / pcm id for a new card (W10.2)
   invalid_card_handle = 56,   // operation references an unknown card handle (W10.2)
   card_name_in_use = 57,      // a card with this name already exists (W10.2)
-  invalid_card_name = 58,     // card name empty or otherwise invalid (W10.2)
-  send_invalid_size = 60,     // daemon data size too big for buffer
-  send_u2k_failed = 61,       // daemon failed to send command to driver
-  send_k2u_failed = 62,       // daemon failed to send event response to driver
-  receive_u2k_failed = 63,    // daemon failed to receive response from driver
-  receive_k2u_failed = 64,    // daemon failed to receive event from driver
-  invalid_driver_response = 65  // unexpected driver command response code
+  invalid_card_name = 58,     // card name empty/invalid or card not found (W10.2)
+  pcm_name_in_use = 59,       // a pcm with this name already exists on the card (W10.2)
+  invalid_pcm_name = 60,      // pcm name empty/invalid or pcm not found (W10.2)
+  /* NB: get_http_error_status maps daemon codes < send_invalid_size to HTTP 400
+   * (client errors) and the rest to 500 — keep request-validation codes below
+   * send_invalid_size. */
+  send_invalid_size = 70,     // daemon data size too big for buffer
+  send_u2k_failed = 71,       // daemon failed to send command to driver
+  send_k2u_failed = 72,       // daemon failed to send event response to driver
+  receive_u2k_failed = 73,    // daemon failed to receive response from driver
+  receive_k2u_failed = 74,    // daemon failed to receive event from driver
+  invalid_driver_response = 75  // unexpected driver command response code
 };
 
 namespace std {
