@@ -45,7 +45,7 @@ class DriverManager : public DriverHandler {
   std::error_code ping();  // unused, return error
   std::error_code set_ptp_config(const TPTPConfig& config);
   std::error_code get_ptp_config(TPTPConfig& config);
-  std::error_code get_ptp_status(TPTPStatus& status);
+  std::error_code get_ptp_status(uint8_t domain, TPTPStatus& status);
   std::error_code set_interface_name(const std::string& ifname);
   /* W10 multi-card: the daemon owns card bringup. A card is created
    * UNregistered (add_card), its PCM device(s) added (add_pcm_to_card),

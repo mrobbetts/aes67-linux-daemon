@@ -376,6 +376,10 @@ class SessionManager {
 
   PTPConfig ptp_config_;
   PTPStatus ptp_status_;
+  /* W11: per-domain GMID (keyed by domain number) for the SDP refclk, mirrored
+   * from the kernel per active domain by the worker. ptp_status_ stays the
+   * domain-0 status for /api/ptp/status + observers. Guarded by ptp_mutex_. */
+  std::map<uint8_t, std::string> ptp_gmid_by_domain_;
   mutable std::shared_mutex ptp_mutex_;
 
   std::list<SourceObserver> add_source_observers_;

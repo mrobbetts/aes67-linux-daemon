@@ -187,8 +187,9 @@ std::error_code DriverManager::get_ptp_config(TPTPConfig& config) {
   return retcode_;
 }
 
-std::error_code DriverManager::get_ptp_status(TPTPStatus& status) {
-  this->send_command(MT_ALSA_Msg_GetPTPStatus);
+std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status) {
+  this->send_command(MT_ALSA_Msg_GetPTPStatus, sizeof(domain),
+                     reinterpret_cast<const uint8_t*>(&domain));
   if (!retcode_) {
     memcpy(&status, recv_data_, sizeof(TPTPStatus));
     BOOST_LOG_TRIVIAL(debug)
