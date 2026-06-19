@@ -66,6 +66,7 @@ enum class DaemonErrc {
   invalid_card_name = 58,     // card name empty/invalid or card not found (W10.2)
   pcm_name_in_use = 59,       // a pcm with this name already exists on the card (W10.2)
   invalid_pcm_name = 60,      // pcm name empty/invalid or pcm not found (W10.2)
+  invalid_card_domain = 61,   // card PTP domain out of range [0, MAX_DOMAINS) (W11)
   /* NB: get_http_error_status maps daemon codes < send_invalid_size to HTTP 400
    * (client errors) and the rest to 500 — keep request-validation codes below
    * send_invalid_size. */

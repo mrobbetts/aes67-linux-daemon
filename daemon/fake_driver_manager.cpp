@@ -108,7 +108,8 @@ std::error_code DriverManager::get_ptp_config(TPTPConfig& config) {
   return std::error_code{};
 }
 
-std::error_code DriverManager::get_ptp_status(TPTPStatus& status) {
+std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status) {
+  (void)domain;
   status.nPTPLockStatus = PTPLS_UNLOCKED;
   status.ui64GMID[0] = 0xABABABABABABABAB;
   status.ui64GMID[1] = 0x0;

@@ -536,6 +536,16 @@ std::error_code SessionManager::add_card(const Card& spec) {
     BOOST_LOG_TRIVIAL(error) << "session_manager:: add_card: empty card name";
     return DaemonErrc::invalid_card_name;
   }
+  /* W11: domains index the per-(NIC,domain) servo array directly (slot == domain
+   * number), bounded by the kernel's MAX_DOMAINS (== MR_ALSA_MAX_CARDS ==
+   * card_handle_max). Reject out-of-range here instead of letting the kernel
+   * clamp it silently. */
+  if (card.domain >= card_handle_max) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: add_card: domain " << (int)card.domain
+        << " out of range [0," << (int)card_handle_max << ")";
+    return DaemonErrc::invalid_card_domain;
+  }
   for (const auto& [h, c] : cards_) {
     (void)h;
     if (c.name == card.name) {
@@ -880,8 +890,14 @@ std::error_code SessionManager::update_card(const std::string& name,
   /* card-level edit: rename and/or re-domain. Recreates the card under the new
    * identity, keeping its pcm set (pcm_ids preserved) and re-establishing bound
    * streams. NB: renaming changes the hw:<name> ALSA id (clients referencing the
-   * old name must update), and a non-zero domain is W11/multi-PTP-domain
-   * (untested) -- both surfaced in the WebUI. */
+   * old name must update), and re-domaining moves the card to another PTP
+   * domain (W11) -- both surfaced in the WebUI. */
+  if (new_domain >= card_handle_max) {  // card_handle_max == kernel MAX_DOMAINS
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: update_card: domain " << (int)new_domain
+        << " out of range [0," << (int)card_handle_max << ")";
+    return DaemonErrc::invalid_card_domain;
+  }
   std::list<Pcm> pcms;
   {
     std::shared_lock cards_lock(cards_mutex_);
@@ -1505,6 +1521,16 @@ std::string SessionManager::get_source_sdp_(uint32_t id,
    * single global ptp_status_.gmid; per-domain GMID lands in slice 2 once the
    * kernel runs a servo per domain. (ST-2022-7 stream[1] shares this pcm.) */
   uint8_t domain = domain_for_pcm_(info.stream[0].m_uiPCMId);
+  /* W11: the GMID of THIS source's domain (mirrored per-domain by the worker);
+   * falls back to the global/domain-0 status if that domain isn't mirrored yet.
+   * ptp_mutex_ is held shared above. */
+  std::string refclk_gmid = ptp_status_.gmid;
+  {
+    auto it = ptp_gmid_by_domain_.find(domain);
+    if (it != ptp_gmid_by_domain_.end() && !it->second.empty()) {
+      refclk_gmid = it->second;
+    }
+  }
   auto [ip_addr, sec_ip_str] = get_interface_ip(config_->get_interface_name(1));
   bool dup_entry =
       info.st20227_enabled && !sec_ip_str.empty()/* &&
@@ -1552,7 +1578,7 @@ std::string SessionManager::get_source_sdp_(uint32_t id,
   if (info.refclk_ptp_traceable) {
     ss << "traceable\n";
   } else {
-    ss << ptp_status_.gmid << ":" << static_cast<unsigned>(domain)
+    ss << refclk_gmid << ":" << static_cast<unsigned>(domain)
        << "\n";
   }
   ss << "a=recvonly\n";
@@ -1580,7 +1606,7 @@ std::string SessionManager::get_source_sdp_(uint32_t id,
     if (info.refclk_ptp_traceable) {
       ss << "traceable\n";
     } else {
-      ss << ptp_status_.gmid << ":" << static_cast<unsigned>(domain)
+      ss << refclk_gmid << ":" << static_cast<unsigned>(domain)
          << "\n";
     }
     ss << "a=mid:2\n";
@@ -2235,7 +2261,7 @@ bool SessionManager::worker() {
         ptp_interval) {
       ptp_timepoint = steady_clock::now();
       if (driver_->get_ptp_config(ptp_config) ||
-          driver_->get_ptp_status(ptp_status)) {
+          driver_->get_ptp_status(0, ptp_status)) {
         BOOST_LOG_TRIVIAL(error)
             << "session_manager:: failed to retrieve PTP clock info";
         // return false;
@@ -2279,6 +2305,33 @@ bool SessionManager::worker() {
         }
         // end update PTP clock status
         ptp_mutex_.unlock();
+
+        /* W11: mirror each ACTIVE domain's GMID (the distinct Card.domains) so
+         * get_source_sdp_ can stamp the right per-domain refclk. A change in any
+         * domain's GMID re-advertises sources (folds into ptp_changed_gmid). */
+        {
+          std::set<uint8_t> domains;
+          for (const auto& card : get_cards()) {
+            domains.insert(card.domain);
+          }
+          std::map<uint8_t, std::string> gmids;
+          for (uint8_t d : domains) {
+            TPTPStatus ds;
+            if (!driver_->get_ptp_status(d, ds)) {
+              char id[24];
+              const uint8_t* g = reinterpret_cast<uint8_t*>(&ds.ui64GMID);
+              snprintf(id, sizeof(id),
+                       "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", g[0], g[1],
+                       g[2], g[3], g[4], g[5], g[6], g[7]);
+              gmids[d] = id;
+            }
+          }
+          std::unique_lock<std::shared_mutex> lk(ptp_mutex_);
+          if (gmids != ptp_gmid_by_domain_) {
+            ptp_gmid_by_domain_ = std::move(gmids);
+            ptp_changed_gmid = true;
+          }
+        }
 
         if (!ptp_status_changed_to.empty()) {
           on_ptp_status_changed(ptp_status_changed_to);

@@ -143,6 +143,8 @@ std::string DaemonErrCategory::message(int ev) const {
       return "a pcm with this name already exists on the card";
     case DaemonErrc::invalid_pcm_name:
       return "pcm name is empty/invalid or the pcm was not found";
+    case DaemonErrc::invalid_card_domain:
+      return "card PTP domain is out of range";
     default:
       return "(unrecognized daemon error)";
   }
