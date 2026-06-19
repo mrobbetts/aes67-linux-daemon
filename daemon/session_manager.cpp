@@ -1106,6 +1106,47 @@ bool SessionManager::load_status() {
     }
   }
 
+  /* W10.2 defensive (load): clamp any persisted stream whose channel map no
+   * longer fits its pcm (e.g. a 6-ch source auto-assigned to a 4-out pcm across
+   * the model transition) so it is KEPT + fixed rather than rejected by
+   * add_source/add_sink's range guard. The REST path stays strict (reject); this
+   * is the gentle-on-stale-data load path. */
+  auto clamp_map = [](std::vector<uint8_t>& map, uint32_t limit) {
+    std::vector<uint8_t> kept;
+    for (uint8_t ch : map) {
+      if (ch < limit) {
+        kept.push_back(ch);
+      }
+    }
+    bool changed = kept.size() != map.size();
+    map = std::move(kept);
+    return changed;
+  };
+  for (auto& source : sources_list) {
+    Pcm pcm;
+    if (pcm_for_id_(source.pcm, pcm)) {
+      size_t before = source.map.size();
+      if (clamp_map(source.map, pcm.num_outputs)) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "session_manager:: load: clamped source " << (int)source.id
+            << " to pcm \"" << pcm.name << "\" outputs (" << before << " -> "
+            << source.map.size() << " channels)";
+      }
+    }
+  }
+  for (auto& sink : sinks_list) {
+    Pcm pcm;
+    if (pcm_for_id_(sink.pcm, pcm)) {
+      size_t before = sink.map.size();
+      if (clamp_map(sink.map, pcm.num_inputs)) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "session_manager:: load: clamped sink " << (int)sink.id
+            << " to pcm \"" << pcm.name << "\" inputs (" << before << " -> "
+            << sink.map.size() << " channels)";
+      }
+    }
+  }
+
   for (auto const& source : sources_list) {
     add_source(source);
   }
@@ -1230,6 +1271,24 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
         << " channel map has " << source.map.size() << " entries (max "
         << MAX_CHANNELS_BY_RTP_STREAM << ")";
     return DaemonErrc::invalid_channel_map;
+  }
+  /* W10.2 defensive: every map index must fit the bound pcm. A source reads the
+   * card's ALSA OUTPUT channels, so each index must be < num_outputs. Catches a
+   * stale bind (e.g. a 6-ch source auto-assigned to a 4-out pcm) -- rejected at
+   * the REST boundary and dropped+logged on load. */
+  {
+    Pcm pcm;
+    if (pcm_for_id_(source.pcm, pcm)) {
+      for (uint8_t ch : source.map) {
+        if (ch >= pcm.num_outputs) {
+          BOOST_LOG_TRIVIAL(error)
+              << "session_manager:: source " << std::to_string(source.id)
+              << " channel " << (int)ch << " exceeds pcm \"" << pcm.name
+              << "\" output count (" << pcm.num_outputs << ")";
+          return DaemonErrc::invalid_channel_map;
+        }
+      }
+    }
   }
 
   StreamInfo info;
@@ -1623,6 +1682,22 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
           << " channel map has " << sink.map.size() << " entries (max "
           << MAX_CHANNELS_BY_RTP_STREAM << ")";
       return DaemonErrc::invalid_channel_map;
+    }
+    /* W10.2 defensive: every map index must fit the bound pcm. A sink writes the
+     * card's ALSA INPUT channels, so each index must be < num_inputs. */
+    {
+      Pcm bound;
+      if (pcm_for_id_(sink.pcm, bound)) {
+        for (uint8_t ch : sink.map) {
+          if (ch >= bound.num_inputs) {
+            BOOST_LOG_TRIVIAL(error)
+                << "session_manager:: sink " << std::to_string(sink.id)
+                << " channel " << (int)ch << " exceeds pcm \"" << bound.name
+                << "\" input count (" << bound.num_inputs << ")";
+            return DaemonErrc::invalid_channel_map;
+          }
+        }
+      }
     }
     for (auto ch : sink.map) {
       if (channel_used[ch]) {
