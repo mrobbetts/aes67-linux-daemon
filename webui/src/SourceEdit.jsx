@@ -73,6 +73,9 @@ class SourceEdit extends Component {
       channels: this.props.source.map.length,
       channelsErr: false,
       map: this.props.source.map,
+      // the selected pcm's rate (the picker fills it in on mount); drives the
+      // packet-duration label + the per-rate samples/packet options below.
+      sampleRate: this.props.sampleRate,
       maxSamplesPerPacket: this.getMaxSamplesPerPacket(),
       maxChannels: this.getMaxChannels(this.props.source.codec, this.getMaxSamplesPerPacket()),
       audioMap: []
@@ -167,7 +170,9 @@ class SourceEdit extends Component {
     }
     let audioMap = [];
     for (let v = 0; v <= (pcmChannels - channels); v += 1) { audioMap.push(v); }
-    this.setState({ pcm: pcm.pcm_id, pcmChannels: pcmChannels, channels: channels, map: map, audioMap: audioMap });
+    // a pcm with rate 0 inherits the daemon-wide default (props.sampleRate).
+    const sampleRate = pcm.sample_rate || this.props.sampleRate;
+    this.setState({ pcm: pcm.pcm_id, pcmChannels: pcmChannels, channels: channels, map: map, audioMap: audioMap, sampleRate: sampleRate });
   }
 
   onChangeChannels(e) {
@@ -194,7 +199,10 @@ class SourceEdit extends Component {
   }
 
   getnFS() {
-    switch(this.props.sampleRate) {
+    // selected pcm's rate when known (state set), else the initial prop (used
+    // during the constructor's pre-state call).
+    const rate = (this.state && this.state.sampleRate) || this.props.sampleRate;
+    switch(rate) {
       case 384000:
       case 352800:
         return 8;
@@ -224,7 +232,8 @@ class SourceEdit extends Component {
   }
 
   getPacketDuration(samples) {
-    let duration = (samples * 1000000) / this.props.sampleRate;
+    const rate = (this.state && this.state.sampleRate) || this.props.sampleRate;
+    let duration = (samples * 1000000) / rate;
     if (duration >= 1000) {
       duration /= 1000;
       if (duration == Math.round(duration))
