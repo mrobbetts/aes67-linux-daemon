@@ -266,7 +266,8 @@ class SourceEdit extends Component {
               <th align="left"> <label>Name</label> </th>
               <th align="left"> <input value={this.state.name} onChange={e => this.setState({name: e.target.value, nameErr: !e.currentTarget.checkValidity()})} required/> </th>
             </tr>
-            <PcmPicker value={this.state.pcm} onChange={this.onChangePcm} />
+            <PcmPicker value={this.state.pcm} onChange={this.onChangePcm}
+              applicable={(p) => p.num_outputs >= this.state.channels} />
             <tr>
               <th align="left"> <label>Max samples per packet </label> </th>
               <th align="left">

@@ -175,6 +175,10 @@ class SinkEdit extends Component {
   }
 
   render()  {
+    // a sink can only bind a pcm whose rate matches its SDP rate (the daemon's
+    // rate-match guard) and that has enough input channels -- grey out the rest.
+    const m = (this.state.sdp || '').match(/a=rtpmap:\d+\s+[A-Za-z0-9]+\/(\d+)/);
+    const sdpRate = m ? parseInt(m[1], 10) : 0;
     return (
       <div id='sink-edit'>
         <Modal ariaHideApp={false}
@@ -192,7 +196,8 @@ class SinkEdit extends Component {
               <th align="left"> <label>Name</label> </th>
               <th align="left"> <input value={this.state.name} onChange={e => this.setState({name: e.target.value, nameErr: !e.currentTarget.checkValidity()})} required/> </th>
             </tr>
-            <PcmPicker value={this.state.pcm} onChange={this.onChangePcm} />
+            <PcmPicker value={this.state.pcm} onChange={this.onChangePcm}
+              applicable={(p) => p.num_inputs >= this.state.channels && (!sdpRate || p.sample_rate === sdpRate)} />
             <tr height="35">
               <th align="left"> <label>Use SDP</label> </th>
               <th align="left"> <input type="checkbox" defaultChecked={this.state.useSdp} onChange={e => this.setState({useSdp: e.target.checked})} /> </th>
