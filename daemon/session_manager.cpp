@@ -1022,6 +1022,17 @@ uint32_t SessionManager::rate_for_pcm_(uint8_t pcm_id) const {
   return config_->get_sample_rate();
 }
 
+uint8_t SessionManager::domain_for_pcm_(uint8_t pcm_id) const {
+  Pcm pcm;
+  Card card;
+  if (pcm_for_id_(pcm_id, pcm) && !get_card_by_name(pcm.card, card)) {
+    return card.domain;
+  }
+  /* unknown pcm/card (add-time validation rejects those) — fall back to the
+   * daemon-wide configured PTP domain, mirroring rate_for_pcm_. */
+  return config_->get_ptp_domain();
+}
+
 void SessionManager::seed_topology_from_config_(std::list<Card>& cards,
                                                 std::list<Pcm>& pcms) const {
   /* First-boot / no-persisted-topology fallback: one card + one "default" pcm
@@ -1488,6 +1499,12 @@ std::string SessionManager::get_source_sdp_(uint32_t id,
    * (matches m_ui32SamplingRate stamped in add_source), not the manager-wide
    * rate. ptime below derives from it. W10.2: resolved from the owning card. */
   uint32_t sample_rate = rate_for_pcm_(info.stream[0].m_uiPCMId);
+  /* W11 slice 1: advertise THIS source's PTP domain (its owning card's), not the
+   * single daemon-wide one — so a card in domain N announces clock-domain N.
+   * Domain-0 cards are byte-identical to before. The GMID below is still the
+   * single global ptp_status_.gmid; per-domain GMID lands in slice 2 once the
+   * kernel runs a servo per domain. (ST-2022-7 stream[1] shares this pcm.) */
+  uint8_t domain = domain_for_pcm_(info.stream[0].m_uiPCMId);
   auto [ip_addr, sec_ip_str] = get_interface_ip(config_->get_interface_name(1));
   bool dup_entry =
       info.st20227_enabled && !sec_ip_str.empty()/* &&
@@ -1530,12 +1547,12 @@ std::string SessionManager::get_source_sdp_(uint32_t id,
      << "a=framecount:" << info.stream[0].m_ui32MaxSamplesPerPacket << "\n"
      << "a=ptime:" << ptime << "\n"
      << "a=mediaclk:direct=0\n";
-  ss << "a=clock-domain:PTPv2 " << static_cast<unsigned>(ptp_config_.domain)
+  ss << "a=clock-domain:PTPv2 " << static_cast<unsigned>(domain)
      << "\na=ts-refclk:ptp=IEEE1588-2008:";
   if (info.refclk_ptp_traceable) {
     ss << "traceable\n";
   } else {
-    ss << ptp_status_.gmid << ":" << static_cast<unsigned>(ptp_config_.domain)
+    ss << ptp_status_.gmid << ":" << static_cast<unsigned>(domain)
        << "\n";
   }
   ss << "a=recvonly\n";
@@ -1558,12 +1575,12 @@ std::string SessionManager::get_source_sdp_(uint32_t id,
        << "a=framecount:" << info.stream[1].m_ui32MaxSamplesPerPacket << "\n"
        << "a=ptime:" << ptime << "\n"
        << "a=mediaclk:direct=0\n";
-    ss << "a=clock-domain:PTPv2 " << static_cast<unsigned>(ptp_config_.domain)
+    ss << "a=clock-domain:PTPv2 " << static_cast<unsigned>(domain)
        << "\na=ts-refclk:ptp=IEEE1588-2008:";
     if (info.refclk_ptp_traceable) {
       ss << "traceable\n";
     } else {
-      ss << ptp_status_.gmid << ":" << static_cast<unsigned>(ptp_config_.domain)
+      ss << ptp_status_.gmid << ":" << static_cast<unsigned>(domain)
          << "\n";
     }
     ss << "a=mid:2\n";

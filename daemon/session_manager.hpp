@@ -319,6 +319,10 @@ class SessionManager {
   bool pcm_for_id_(uint8_t pcm_id, Pcm& out) const;
   bool pcm_declared_(uint8_t pcm_id) const;
   uint32_t rate_for_pcm_(uint8_t pcm_id) const;
+  /* W11: the PTP clock domain a pcm's stream rides — its owning card's domain.
+   * Falls back to the daemon-wide configured domain for an unresolvable pcm
+   * (validation rejects those), mirroring rate_for_pcm_. */
+  uint8_t domain_for_pcm_(uint8_t pcm_id) const;
 
   bool sink_is_still_valid(const std::string sdp,
                            const std::list<RemoteSource> sources_list) const;
