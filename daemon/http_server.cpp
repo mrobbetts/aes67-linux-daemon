@@ -121,8 +121,7 @@ bool HttpServer::init() {
        * boundary (HTTP 400) — the same check Config::parse runs on file load.
        * Without this a bad set is saved and bricks the daemon on the restart
        * the save itself triggers. */
-      std::string dg_err = validate_device_groups(config.get_device_groups(),
-                                                  config.get_sample_rate());
+      std::string dg_err = validate_device_groups(config.get_device_groups());
       if (!dg_err.empty()) {
         set_error(400, dg_err, res);
         return;
@@ -134,14 +133,9 @@ bool HttpServer::init() {
         log_init(config);
       }
       std::error_code ret;
-      if (config_->get_playout_delay() != config.get_playout_delay()) {
-        ret = session_manager_->set_driver_config("playout_delay",
-                                                  config.get_playout_delay());
-      }
-      if (config_->get_sample_rate() != config.get_sample_rate()) {
-        ret = session_manager_->set_driver_config("sample_rate",
-                                                  config.get_sample_rate());
-      }
+      /* playout_delay and sample_rate are no longer daemon-wide config: they
+       * are per-PCM (set at card bring-up from each PCM's own value). The only
+       * live driver config left here is PTP. */
       if (config_->get_ptp_domain() != config.get_ptp_domain() ||
           config_->get_ptp_dscp() != config.get_ptp_dscp()) {
         PTPConfig ptpConfig{config.get_ptp_domain(), config.get_ptp_dscp()};

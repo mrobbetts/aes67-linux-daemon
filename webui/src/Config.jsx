@@ -38,12 +38,9 @@ class Config extends Component {
       rtspPort: '',
       rtspPortErr: false,
       logSeverity: '',
-      playoutDelay: '',
-      playoutDelayErr: false,
       ticFrameSizeAt1fs: '',
       maxTicFrameSize: '',
       maxTicFrameSizeErr: false,
-      sampleRate: '',
       rtpMcastBase: '',
       rtpMcastBaseErr: false,
       rtpPort: '',
@@ -103,10 +100,8 @@ class Config extends Component {
             httpPort: data.http_port,
             rtspPort: data.rtsp_port,
             logSeverity: data.log_severity,
-            playoutDelay: data.playout_delay,
             ticFrameSizeAt1fs: data.tic_frame_size_at_1fs,
             maxTicFrameSize: data.max_tic_frame_size,
-            sampleRate: data.sample_rate,
             rtpMcastBase: data.rtp_mcast_base,
             rtpMcastBaseSec: data.rtp_mcast_base_sec,
             rtpPort: data.rtp_port,
@@ -143,8 +138,7 @@ class Config extends Component {
   }
 
   inputIsValid() {
-    return !this.state.playoutDelayErr &&
-      !this.state.maxTicFrameSizeErr &&
+    return !this.state.maxTicFrameSizeErr &&
       !this.state.rtpMcastBaseErr &&
       !this.state.rtpMcastBaseSecErr &&
       !this.state.sapMcastAddrErr &&
@@ -172,9 +166,7 @@ class Config extends Component {
       this.state.rtpPort,
       this.state.rtpPortSec,
       this.state.rtspPort,
-      this.state.playoutDelay,
       this.state.ticFrameSizeAt1fs,
-      this.state.sampleRate,
       this.state.maxTicFrameSize,
       this.state.sapMcastAddr,
       this.state.sapInterval,
@@ -204,10 +196,6 @@ class Config extends Component {
 	{this.state.isConfigLoading ? <Loader/> : <h3>Audio Config</h3>}
         <table><tbody>
           <tr>
-            <th align="left"> <label>Safety Playout delay (samples) </label> </th>
-            <th align="left"> <input type='number' min='0' max='4000' className='input-number' value={this.state.playoutDelay} onChange={e => this.setState({playoutDelay: e.target.value, playoutDelayErr: !e.currentTarget.checkValidity()})} required/> </th>
-          </tr>
-          <tr>
             <th align="left"> <label>TIC frame size @1FS (samples) </label> </th>
             <th align="left">
               <select value={this.state.ticFrameSizeAt1fs} onChange={e => this.setState({ticFrameSizeAt1fs: e.target.value})}>
@@ -222,21 +210,6 @@ class Config extends Component {
           <tr>
             <th align="left"> <label>Max TIC frame size (samples) </label> </th>
             <th align="left"> <input type='number' min='192' max='8192' className='input-number' value={this.state.maxTicFrameSize} onChange={e => this.setState({maxTicFrameSize: e.target.value, maxTicFrameSizeErr: !e.currentTarget.checkValidity()})} disabled required/> </th>
-          </tr>
-          <tr>
-            <th align="left"> <label>Initial Sample rate</label> </th>
-            <th align="left">
-	      <select value={this.state.sampleRate} onChange={e => this.setState({sampleRate: e.target.value})}>
-                <option value="44100">44.1 kHz</option>
-                <option value="48000">48 kHz</option>
-                <option value="88200">88.2 kHz</option>
-                <option value="96000">96 kHz</option>
-                <option value="176400">176.4 kHz</option>
-                <option value="192000">192 kHz</option>
-                <option value="352800">352.8 kHz</option>
-                <option value="384000">384 kHz</option>
-              </select>
-            </th>
           </tr>
         </tbody></table>
         <br/>

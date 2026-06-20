@@ -83,10 +83,8 @@ std::string config_to_json(const Config& config) {
      << ",\n  \"rtsp_port\": " << config.get_rtsp_port()
      << ",\n  \"http_base_dir\": \"" << config.get_http_base_dir() << "\""
      << ",\n  \"log_severity\": " << config.get_log_severity()
-     << ",\n  \"playout_delay\": " << config.get_playout_delay()
      << ",\n  \"tic_frame_size_at_1fs\": " << config.get_tic_frame_size_at_1fs()
      << ",\n  \"max_tic_frame_size\": " << config.get_max_tic_frame_size()
-     << ",\n  \"sample_rate\": " << config.get_sample_rate()
      << ",\n  \"rtp_mcast_base\": \""
      << escape_json(config.get_rtp_mcast_base()) << "\""
      << ",\n  \"rtp_mcast_base_sec\": \""
@@ -495,14 +493,10 @@ Config json_to_config_(std::istream& js, Config& config) {
       } else if (key == "interface_name") {
         config.set_interface_name(
             remove_undesired_chars(val.get_value<std::string>()));
-      } else if (key == "playout_delay") {
-        config.set_playout_delay(val.get_value<uint32_t>());
       } else if (key == "tic_frame_size_at_1fs") {
         config.set_tic_frame_size_at_1fs(val.get_value<uint32_t>());
       } else if (key == "max_tic_frame_size") {
         config.set_max_tic_frame_size(val.get_value<uint32_t>());
-      } else if (key == "sample_rate") {
-        config.set_sample_rate(val.get_value<uint32_t>());
       } else if (key == "rtp_mcast_base") {
         config.set_rtp_mcast_base(
             remove_undesired_chars(val.get_value<std::string>()));

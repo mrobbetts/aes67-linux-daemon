@@ -43,7 +43,6 @@ class SourceEdit extends Component {
   static propTypes = {
     source: PropTypes.object.isRequired,
     ticFrameSizeAt1fs: PropTypes.number.isRequired,
-    sampleRate: PropTypes.number.isRequired,
     applyEdit: PropTypes.func.isRequired,
     closeEdit: PropTypes.func.isRequired,
     editIsOpen: PropTypes.bool.isRequired,
@@ -75,7 +74,8 @@ class SourceEdit extends Component {
       map: this.props.source.map,
       // the selected pcm's rate (the picker fills it in on mount); drives the
       // packet-duration label + the per-rate samples/packet options below.
-      sampleRate: this.props.sampleRate,
+      // 0 until the picker resolves the bound pcm's (always-explicit) rate.
+      sampleRate: 0,
       maxSamplesPerPacket: this.getMaxSamplesPerPacket(),
       maxChannels: this.getMaxChannels(this.props.source.codec, this.getMaxSamplesPerPacket()),
       audioMap: []
@@ -170,8 +170,8 @@ class SourceEdit extends Component {
     }
     let audioMap = [];
     for (let v = 0; v <= (pcmChannels - channels); v += 1) { audioMap.push(v); }
-    // a pcm with rate 0 inherits the daemon-wide default (props.sampleRate).
-    const sampleRate = pcm.sample_rate || this.props.sampleRate;
+    // every pcm carries its own explicit rate (no daemon-wide default).
+    const sampleRate = pcm.sample_rate;
     this.setState({ pcm: pcm.pcm_id, pcmChannels: pcmChannels, channels: channels, map: map, audioMap: audioMap, sampleRate: sampleRate });
   }
 
@@ -199,9 +199,9 @@ class SourceEdit extends Component {
   }
 
   getnFS() {
-    // selected pcm's rate when known (state set), else the initial prop (used
-    // during the constructor's pre-state call).
-    const rate = (this.state && this.state.sampleRate) || this.props.sampleRate;
+    // selected pcm's rate when known (state set); 0 before the picker resolves
+    // it (default case → nFS 1, harmless for the pre-selection preview).
+    const rate = (this.state && this.state.sampleRate) || 0;
     switch(rate) {
       case 384000:
       case 352800:
@@ -232,7 +232,8 @@ class SourceEdit extends Component {
   }
 
   getPacketDuration(samples) {
-    const rate = (this.state && this.state.sampleRate) || this.props.sampleRate;
+    const rate = (this.state && this.state.sampleRate) || 0;
+    if (!rate) return '';  // no pcm resolved yet — nothing to show
     let duration = (samples * 1000000) / rate;
     if (duration >= 1000) {
       duration /= 1000;

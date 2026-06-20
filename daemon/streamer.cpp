@@ -222,7 +222,9 @@ bool Streamer::start_capture() {
     return false;
   }
 
-  rate_ = config_->get_sample_rate();
+  /* the streamer captures the primary PCM (plughw:RAVENNA, device 0); its rate
+   * is that PCM's rate. There is no daemon-wide sample-rate default anymore. */
+  rate_ = config_->rate_for_group(0);
   if ((err = snd_pcm_hw_params_set_rate_near(capture_handle_, hw_params, &rate_,
                                              0)) < 0) {
     BOOST_LOG_TRIVIAL(fatal)
@@ -339,7 +341,7 @@ void Streamer::save_files(uint8_t files_id) {
 
 bool Streamer::setup_codec(const StreamSink& sink) {
   /* open and setup the encoder */
-  faac_[sink.id] = faacEncOpen(config_->get_sample_rate(), sink.map.size(),
+  faac_[sink.id] = faacEncOpen(config_->rate_for_group(0), sink.map.size(),
                                &codec_in_samples_[sink.id],
                                &codec_out_buffer_size_[sink.id]);
   if (!faac_[sink.id]) {
@@ -514,7 +516,7 @@ std::error_code Streamer::get_info(const StreamSink& sink, StreamerInfo& info) {
   info.files_num = files_num_;
   info.file_duration = file_duration_;
   info.player_buffer_files_num = player_buffer_files_num_;
-  info.rate = config_->get_sample_rate();
+  info.rate = config_->rate_for_group(0);
   info.channels = sink.map.size();
   info.start_file_id = start_file_id;
   info.current_file_id = file_id;
