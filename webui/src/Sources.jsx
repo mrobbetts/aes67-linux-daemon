@@ -144,7 +144,6 @@ class Sources extends Component {
       infoIsOpen: false,
       removeIsOpen: false,
       ticFrameSizeAt1fs: '',
-      sampleRate: '',
       editTitle: ''
     };
     this.onInfoClick = this.onInfoClick.bind(this);
@@ -170,7 +169,7 @@ class Sources extends Component {
     RestAPI.getConfig()
       .then(response => response.json())
       .then(
-        data => this.setState( { isConfigLoading: false, ticFrameSizeAt1fs: data.tic_frame_size_at_1fs, sampleRate: data.sample_rate }))
+        data => this.setState( { isConfigLoading: false, ticFrameSizeAt1fs: data.tic_frame_size_at_1fs }))
       .catch(err => this.setState({ isConfigLoading: false }));
   }
 
@@ -280,7 +279,6 @@ class Sources extends Component {
           editTitle={this.state.editTitle}
 	  isEdit={this.state.isEdit}
           ticFrameSizeAt1fs={this.state.ticFrameSizeAt1fs}
-          sampleRate={this.state.sampleRate}
 	  source={this.state.source} />
            : undefined }
        { this.state.removeIsOpen ?

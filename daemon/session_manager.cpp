@@ -485,9 +485,9 @@ std::error_code SessionManager::bring_up_card_(const Card& card,
   std::sort(ordered.begin(), ordered.end(),
             [](const Pcm& a, const Pcm& b) { return a.pcm_id < b.pcm_id; });
   for (const auto& pcm : ordered) {
-    uint32_t rate =
-        pcm.sample_rate ? pcm.sample_rate : config_->get_sample_rate();
-    if (auto ec = driver_->add_pcm_to_card(card.handle, pcm.pcm_id, rate,
+    /* every PCM carries its own validated rate — no daemon-wide fallback. */
+    if (auto ec = driver_->add_pcm_to_card(card.handle, pcm.pcm_id,
+                                           pcm.sample_rate,
                                            pcm.num_inputs, pcm.num_outputs,
                                            pcm.name)) {
       BOOST_LOG_TRIVIAL(error)
@@ -505,16 +505,12 @@ std::error_code SessionManager::bring_up_card_(const Card& card,
     (void)driver_->remove_card(card.handle);
     return ec;
   }
-  /* W9 #14: advisory ALSA latency, per-PCM. playout_delay inherits the
-   * daemon-wide default when the PCM leaves it 0 (mirrors sample_rate,
-   * Decision 10); capture_delay has no global default. Both are now real
-   * per-chip properties in the kernel — read at prepare() into runtime->delay.
-   * (The real RTP buffering depth is the per-sink link offset, not these.) */
+  /* W9 #14: advisory ALSA latency, per-PCM (no daemon-wide default — each PCM
+   * carries its own playout/capture delay, 0 = none). Real per-chip properties
+   * in the kernel, read at prepare() into runtime->delay. (The real RTP
+   * buffering depth is the per-sink link offset, not these.) */
   for (const auto& pcm : ordered) {
-    const int32_t playout = pcm.playout_delay
-                                ? pcm.playout_delay
-                                : (int32_t)config_->get_playout_delay();
-    if (auto ec = driver_->set_playout_delay(pcm.pcm_id, playout)) {
+    if (auto ec = driver_->set_playout_delay(pcm.pcm_id, pcm.playout_delay)) {
       BOOST_LOG_TRIVIAL(warning)
           << "session_manager:: set_playout_delay(pcm_id " << (int)pcm.pcm_id
           << ") failed: " << ec.message();
@@ -786,6 +782,13 @@ std::error_code SessionManager::add_pcm(const std::string& card_name,
       BOOST_LOG_TRIVIAL(error) << "session_manager:: add_pcm: empty pcm name";
       return DaemonErrc::invalid_pcm_name;
     }
+    /* rate is required per-PCM — there is no daemon-wide default to inherit. */
+    if (!is_valid_pcm_rate(pcm.sample_rate)) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: add_pcm: pcm \"" << pcm.name
+          << "\" has missing/invalid sample_rate " << pcm.sample_rate;
+      return DaemonErrc::invalid_sample_rate;
+    }
     for (const auto& [pid, p] : pcms_) {
       (void)pid;
       if (p.card == card_name && p.name == pcm.name) {
@@ -1035,12 +1038,12 @@ bool SessionManager::pcm_declared_(uint8_t pcm_id) const {
 
 uint32_t SessionManager::rate_for_pcm_(uint8_t pcm_id) const {
   Pcm pcm;
-  if (pcm_for_id_(pcm_id, pcm) && pcm.sample_rate) {
-    return pcm.sample_rate;
+  if (pcm_for_id_(pcm_id, pcm)) {
+    return pcm.sample_rate;  // every PCM carries its own validated rate
   }
-  /* unknown pcm (validation rejects those) or a pcm that inherits the
-   * manager-wide default rate. */
-  return config_->get_sample_rate();
+  /* unknown pcm — validation rejects streams bound to undeclared PCMs, so this
+   * is the can't-happen path; there is no daemon-wide default to return. */
+  return 0;
 }
 
 uint8_t SessionManager::domain_for_pcm_(uint8_t pcm_id) const {
@@ -2040,21 +2043,6 @@ std::error_code SessionManager::get_sink_status(
   }
 
   return ret;
-}
-
-std::error_code SessionManager::set_driver_config(std::string_view name,
-                                                  uint32_t value) const {
-  if (name == "sample_rate")
-    return driver_->set_sample_rate(value);
-  else if (name == "tic_frame_size_at_1fs")
-    return driver_->set_tic_frame_size_at_1fs(value);
-  else if (name == "set_max_tic_frame_size")
-    return driver_->set_max_tic_frame_size(value);
-  else if (name == "playout_delay")
-    /* Legacy REST/JSON entry-point with no pcm context applies to PCM 0;
-     * per-PCM playout_delay belongs in device_groups[] config now. */
-    return driver_->set_playout_delay(0, value);
-  return DriverErrc::unknown;
 }
 
 std::error_code SessionManager::set_ptp_config(const PTPConfig& config) {

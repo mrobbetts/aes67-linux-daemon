@@ -259,8 +259,6 @@ class SessionManager {
   int device_index_of(uint8_t pcm_id) const;
 
   std::error_code set_ptp_config(const PTPConfig& config);
-  std::error_code set_driver_config(std::string_view name,
-                                    uint32_t value) const;
   void get_ptp_config(PTPConfig& config) const;
   void get_ptp_status(PTPStatus& status) const;
   /* W11: per-domain status for the active domains (the Clocks view). */

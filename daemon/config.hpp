@@ -30,16 +30,15 @@
  * kernel module (hw:RAVENNA,id). PCM 0 is created at module probe; the
  * daemon issues MT_ALSA_Msg_AddPCM for any additional groups at startup.
  *
- * W7 (Decision 10 — symmetric config surface): every group, INCLUDING
- * group 0, declares its own optional sample_rate; the top-level
- * Config::sample_rate_ is demoted to the daemon-wide default a group
- * inherits when it leaves sample_rate at 0. There is no user-visible
- * group-0 precedence rule — group 0 is parsed like any other group. The
- * kernel asymmetry (chip 0 is probe-created and re-rated via the
- * manager-wide SetSampleRate, groups 1+ via AddPCM) is absorbed by the
- * driver_manager translation, not exposed here. If `device_groups` is
- * absent from daemon.conf, a synthetic group {id:0} is created from the
- * legacy top-level fields so old configs keep working unchanged.
+ * Every group declares its own REQUIRED sample_rate (and its own
+ * playout/capture delay). There is no daemon-wide sample_rate/playout_delay
+ * default to inherit — a group that omits sample_rate is rejected fail-loud
+ * (validate_device_groups). Group 0 is parsed like any other group; no
+ * user-visible group-0 precedence rule. The kernel asymmetry (chip 0 is
+ * re-rated via the manager-wide SetSampleRate, groups 1+ via AddPCM) is
+ * absorbed by the driver_manager translation, not exposed here. If
+ * `device_groups` is absent, the daemon comes up with no PCMs (add them at
+ * runtime via REST/WebUI) — no synthetic group is fabricated.
  *
  * domain is planted for W11 (multi-PTP-domain) and rejected-if-nonzero
  * until then, so configs written from W7 onward never need reformatting.
@@ -51,7 +50,7 @@ struct DeviceGroup {
   uint32_t num_outputs{0};
   int32_t playout_delay{0};
   int32_t capture_delay{0};
-  uint32_t sample_rate{0};  // 0 = inherit the daemon-wide default
+  uint32_t sample_rate{0};  // required per-group (no daemon-wide default)
   uint8_t domain{0};        // planted for W11; rejected-if-nonzero until then
   std::string name;         // ALSA device name; empty ⇒ kernel default
 
@@ -100,13 +99,17 @@ inline constexpr uint8_t kMaxDeviceGroupId = 15;
  * rejected identically on both — a bad set accepted live would persist and
  * brick the daemon on the restart the save triggers. */
 inline std::string validate_device_groups(
-    const std::vector<DeviceGroup>& groups, uint32_t default_sample_rate) {
+    const std::vector<DeviceGroup>& groups) {
   for (size_t i = 0; i < groups.size(); ++i) {
     const auto& g = groups[i];
-    uint32_t rate = g.sample_rate != 0 ? g.sample_rate : default_sample_rate;
-    if (!is_valid_pcm_rate(rate))
+    /* sample_rate is required per group — there is no daemon-wide default to
+     * fall back to (every PCM states its own rate, fail-loud if absent). */
+    if (g.sample_rate == 0)
       return "device_group id=" + std::to_string(unsigned(g.id)) +
-             ": unsupported sample_rate " + std::to_string(rate);
+             ": sample_rate is required (no daemon-wide default)";
+    if (!is_valid_pcm_rate(g.sample_rate))
+      return "device_group id=" + std::to_string(unsigned(g.id)) +
+             ": unsupported sample_rate " + std::to_string(g.sample_rate);
     if (g.domain != 0)
       return "device_group id=" + std::to_string(unsigned(g.id)) + ": domain " +
              std::to_string(unsigned(g.domain)) +
@@ -150,10 +153,8 @@ class Config {
   uint8_t get_streamer_channels() const { return streamer_channels_; };
   bool get_streamer_enabled() const;
   int get_log_severity() const { return log_severity_; };
-  uint32_t get_playout_delay() const { return playout_delay_; };
   uint32_t get_tic_frame_size_at_1fs() const { return tic_frame_size_at_1fs_; };
   uint32_t get_max_tic_frame_size() const { return max_tic_frame_size_; };
-  uint32_t get_sample_rate() const { return sample_rate_; };
   const std::string& get_rtp_mcast_base() const { return rtp_mcast_base_; };
   const std::string& get_rtp_mcast_base_sec() const {
     return rtp_mcast_base_sec_;
@@ -182,17 +183,17 @@ class Config {
   uint16_t get_nmos_registry_port() const { return nmos_registry_port_; }
   uint16_t get_nmos_node_port() const { return nmos_node_port_; }
   const std::string& get_nmos_label() const { return nmos_label_; }
-  /* W7: resolved sample rate for a PCM/group id — the group's own
-   * sample_rate, or the daemon-wide default when it left it at 0
-   * (Decision 10). Falls back to the default for an unknown id (e.g. a
-   * stream bound to a group that isn't declared — caught separately by
-   * validation). */
+  /* The group's own (required, validated non-zero) sample rate. Returns 0 for
+   * an unknown id — there is no daemon-wide default to fall back to. Callers
+   * that key on a declared group/PCM (validation guarantees a real rate); the
+   * 0 return is the "no such group" sentinel (e.g. the streamer / chip-0
+   * reference when group 0 isn't declared). */
   uint32_t rate_for_group(uint8_t pcm_id) const {
     for (const auto& g : device_groups_) {
       if (g.id == pcm_id)
-        return g.sample_rate != 0 ? g.sample_rate : sample_rate_;
+        return g.sample_rate;
     }
-    return sample_rate_;
+    return 0;
   }
   const std::vector<DeviceGroup>& get_device_groups() const {
     return device_groups_;
@@ -239,16 +240,12 @@ class Config {
     streamer_enabled_ = streamer_enabled;
   };
   void set_log_severity(int log_severity) { log_severity_ = log_severity; };
-  void set_playout_delay(uint32_t playout_delay) {
-    playout_delay_ = playout_delay;
-  };
   void set_tic_frame_size_at_1fs(uint32_t tic_frame_size_at_1fs) {
     tic_frame_size_at_1fs_ = tic_frame_size_at_1fs;
   };
   void set_max_tic_frame_size(uint32_t max_tic_frame_size) {
     max_tic_frame_size_ = max_tic_frame_size;
   };
-  void set_sample_rate(uint32_t sample_rate) { sample_rate_ = sample_rate; };
   void set_rtp_mcast_base(std::string_view rtp_mcast_base) {
     rtp_mcast_base_ = rtp_mcast_base;
   };
@@ -317,10 +314,8 @@ class Config {
                rhs.get_streamer_player_buffer_files_num() ||
            lhs.get_streamer_enabled() != rhs.get_streamer_enabled() ||
            lhs.get_log_severity() != rhs.get_log_severity() ||
-           lhs.get_playout_delay() != rhs.get_playout_delay() ||
            lhs.get_tic_frame_size_at_1fs() != rhs.get_tic_frame_size_at_1fs() ||
            lhs.get_max_tic_frame_size() != rhs.get_max_tic_frame_size() ||
-           lhs.get_sample_rate() != rhs.get_sample_rate() ||
            lhs.get_rtp_mcast_base() != rhs.get_rtp_mcast_base() ||
            lhs.get_rtp_mcast_base_sec() != rhs.get_rtp_mcast_base_sec() ||
            lhs.get_sap_mcast_addr() != rhs.get_sap_mcast_addr() ||
@@ -359,10 +354,8 @@ class Config {
   uint8_t streamer_player_buffer_files_num_{1};
   bool streamer_enabled_{false};
   int log_severity_{2};
-  uint32_t playout_delay_{0};
   uint32_t tic_frame_size_at_1fs_{48};
   uint32_t max_tic_frame_size_{1024};
-  uint32_t sample_rate_{48000};
   std::string rtp_mcast_base_{"239.1.0.1"};
   std::string rtp_mcast_base_sec_{"239.1.0.1"};
   std::string sap_mcast_addr_{"224.2.127.254"};

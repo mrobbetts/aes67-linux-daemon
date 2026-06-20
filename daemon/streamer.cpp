@@ -230,7 +230,9 @@ bool Streamer::start_capture() {
     return false;
   }
 
-  rate_ = config_->get_sample_rate();
+  /* the streamer captures the primary PCM (plughw:RAVENNA, device 0); its rate
+   * is that PCM's rate. There is no daemon-wide sample-rate default anymore. */
+  rate_ = config_->rate_for_group(0);
   if ((err = snd_pcm_hw_params_set_rate_near(capture_handle_, hw_params, &rate_,
                                              0)) < 0) {
     BOOST_LOG_TRIVIAL(fatal)
@@ -356,7 +358,7 @@ bool Streamer::setup_codec(const StreamSink& sink) {
     return false;
   }
 
-  params.sample_rate = config_->get_sample_rate();
+  params.sample_rate = config_->rate_for_group(0);
   params.num_channels = static_cast<uint32_t>(sink.map.size());
   params.object_type = FAAC_OBJ_LOW;
   params.mpeg_version = FAAC_MPEG4;
@@ -397,7 +399,7 @@ bool Streamer::setup_codec(const StreamSink& sink) {
 #else
   unsigned long input_samples = 0;
   unsigned long max_output_bytes = 0;
-  auto enc = faacEncOpen(config_->get_sample_rate(), sink.map.size(),
+  auto enc = faacEncOpen(config_->rate_for_group(0), sink.map.size(),
                          &input_samples, &max_output_bytes);
   if (!enc) {
     BOOST_LOG_TRIVIAL(fatal) << "streamer:: cannot open legacy codec";
@@ -601,7 +603,7 @@ std::error_code Streamer::get_info(const StreamSink& sink, StreamerInfo& info) {
   info.files_num = files_num_;
   info.file_duration = file_duration_;
   info.player_buffer_files_num = player_buffer_files_num_;
-  info.rate = config_->get_sample_rate();
+  info.rate = config_->rate_for_group(0);
   info.channels = sink.map.size();
   info.start_file_id = start_file_id;
   info.current_file_id = file_id;

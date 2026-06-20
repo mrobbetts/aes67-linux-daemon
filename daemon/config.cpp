@@ -62,15 +62,14 @@ std::shared_ptr<Config> Config::parse(const std::string& filename,
 
   if (config.log_severity_ < 0 || config.log_severity_ > 5)
     config.log_severity_ = 2;
-  if (config.playout_delay_ > 4000)
-    config.playout_delay_ = 4000;
+  /* playout_delay and sample_rate are no longer daemon-wide config — they are
+   * per-PCM (validated per device_group / per add_pcm), so no top-level clamp
+   * or default here. */
   if (config.tic_frame_size_at_1fs_ == 0 || config.tic_frame_size_at_1fs_ > 192)
     config.tic_frame_size_at_1fs_ = 192;
   if (config.max_tic_frame_size_ < config.tic_frame_size_at_1fs_ ||
       config.max_tic_frame_size_ > 1024)
     config.max_tic_frame_size_ = 1024;
-  if (config.sample_rate_ == 0)
-    config.sample_rate_ = 48000;
   if (config.streamer_channels_ < 2 || config.streamer_channels_ > 16)
     config.streamer_channels_ = 8;
   if (config.streamer_file_duration_ < 1 || config.streamer_file_duration_ > 4)
@@ -81,27 +80,16 @@ std::shared_ptr<Config> Config::parse(const std::string& filename,
       config.streamer_player_buffer_files_num_ > 2)
     config.streamer_player_buffer_files_num_ = 1;
 
-  /* multi-rate Stage 1: if device_groups is absent (legacy config),
-   * synthesise a single group {id:0} from the top-level fields so the
-   * rest of the daemon has a uniform device_groups view to work with. */
-  if (config.device_groups_.empty()) {
-    DeviceGroup g;
-    g.id = 0;
-    g.num_inputs = 0;
-    g.num_outputs = 0;
-    g.playout_delay = static_cast<int32_t>(config.playout_delay_);
-    g.capture_delay = 0;
-    /* sample_rate=0 ⇒ inherit the top-level default; domain 0; no name —
-     * reproduces legacy single-PCM behaviour exactly (Decision 10). */
-    config.device_groups_.push_back(g);
-  }
+  /* No top-level-field synthesis: device groups are declared explicitly, each
+   * with its own required sample_rate (no daemon-wide default to synthesise
+   * from). A config with no device_groups comes up with no PCMs — add them at
+   * runtime via REST/WebUI. */
 
   /* W7 (Decision 10): validate device-groups fail-loud before touching the
    * driver. Shared with the POST /api/config REST path (config.hpp) so both
    * entry points reject an invalid set identically. */
   {
-    std::string dg_err =
-        validate_device_groups(config.device_groups_, config.sample_rate_);
+    std::string dg_err = validate_device_groups(config.device_groups_);
     if (!dg_err.empty()) {
       std::cerr << dg_err << std::endl;
       return nullptr;
