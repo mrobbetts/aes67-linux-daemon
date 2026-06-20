@@ -183,11 +183,11 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error(std::string("RtspServer:: init failed"));
       }
 
-      /* start streamer */
+      /* start streamer. The streamer is created whenever compiled in; it stays
+       * idle until a sink is flagged stream==true (no runtime enable toggle). */
 #ifdef _USE_STREAMER_
       auto streamer = Streamer::create(session_manager, config);
-      if (config->get_streamer_enabled() &&
-          (streamer == nullptr || !streamer->init())) {
+      if (streamer == nullptr || !streamer->init()) {
         throw std::runtime_error(std::string("Streamer:: init failed"));
       }
 
@@ -256,10 +256,8 @@ int main(int argc, char* argv[]) {
 
       /* stop streamer */
 #ifdef _USE_STREAMER_
-      if (config->get_streamer_enabled()) {
-        if (!streamer->terminate()) {
-          throw std::runtime_error(std::string("Streamer:: terminate failed"));
-        }
+      if (!streamer->terminate()) {
+        throw std::runtime_error(std::string("Streamer:: terminate failed"));
       }
 #endif
 

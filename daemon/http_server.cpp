@@ -574,14 +574,12 @@ bool HttpServer::init() {
     };
 
     info.status = static_cast<uint8_t>(streamer_info_status::ok);
-    if (!config_->get_streamer_enabled()) {
-      info.status = static_cast<uint8_t>(streamer_info_status::not_enabled);
-    } else {
-      try {
-        id = std::stoi(req.matches[1]);
-      } catch (...) {
-        info.status = static_cast<uint8_t>(streamer_info_status::invalid_sink);
-      }
+    /* the streamer is always present when compiled in (#ifdef _USE_STREAMER_);
+     * the per-sink `stream` flag is the only control now. */
+    try {
+      id = std::stoi(req.matches[1]);
+    } catch (...) {
+      info.status = static_cast<uint8_t>(streamer_info_status::invalid_sink);
     }
 
     if (info.status == static_cast<uint8_t>(streamer_info_status::ok)) {
@@ -594,8 +592,11 @@ bool HttpServer::init() {
         ret = streamer_->get_info(sink, info);
         switch (ret.value()) {
           case static_cast<int>(DaemonErrc::streamer_not_running):
+            /* lean streamer: this sink isn't actively streamed (not flagged,
+             * bound to a non-captured PCM, the device is busy, or PTP isn't
+             * locked). not_enabled now carries that "not being streamed". */
             info.status =
-                static_cast<uint8_t>(streamer_info_status::ptp_not_locked);
+                static_cast<uint8_t>(streamer_info_status::not_enabled);
             break;
           case static_cast<int>(DaemonErrc::streamer_invalid_ch):
             info.status =
@@ -618,10 +619,6 @@ bool HttpServer::init() {
   svr_.Get("/api/streamer/stream/([0-9]+)", [this](const Request& req,
                                                    Response& res) {
 #ifdef _USE_STREAMER_
-    if (!this->config_->get_streamer_enabled()) {
-      set_error(400, "streamer not enabled", res);
-      return;
-    }
     uint8_t sinkId;
     try {
       sinkId = std::stoi(req.matches[1]);
@@ -656,10 +653,6 @@ bool HttpServer::init() {
   svr_.Get("/api/streamer/stream/([0-9]+)/([0-9]+)", [this](const Request& req,
                                                             Response& res) {
 #ifdef _USE_STREAMER_
-    if (!this->config_->get_streamer_enabled()) {
-      set_error(400, "streamer not enabled", res);
-      return;
-    }
     uint8_t sinkId, fileId;
     try {
       sinkId = std::stoi(req.matches[1]);

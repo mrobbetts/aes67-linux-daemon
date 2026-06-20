@@ -118,8 +118,6 @@ std::string config_to_json(const Config& config) {
      << unsigned(config.get_streamer_file_duration())
      << ",\n  \"streamer_player_buffer_files_num\": "
      << unsigned(config.get_streamer_player_buffer_files_num())
-     << ",\n  \"streamer_enabled\": " << std::boolalpha
-     << config.get_streamer_enabled()
      << ",\n  \"auto_sinks_update\": " << std::boolalpha
      << config.get_auto_sinks_update()
      << ",\n  \"device_groups\": [";
@@ -186,6 +184,7 @@ std::string sink_to_json(const StreamSink& sink) {
      << ",\n    \"ignore_refclk_gmid\": " << std::boolalpha
      << sink.ignore_refclk_gmid
      << ",\n    \"pcm\": " << unsigned(sink.pcm)
+     << ",\n    \"stream\": " << std::boolalpha << sink.stream
      << ",\n    \"map\": [ ";
   int i = 0;
   for (int value : sink.map) {
@@ -486,8 +485,6 @@ Config json_to_config_(std::istream& js, Config& config) {
         config.set_streamer_file_duration(val.get_value<uint16_t>());
       } else if (key == "streamer_player_buffer_files_num") {
         config.set_streamer_player_buffer_files_num(val.get_value<uint8_t>());
-      } else if (key == "streamer_enabled") {
-        config.set_streamer_enabled(val.get_value<bool>());
       } else if (key == "log_severity") {
         config.set_log_severity(val.get_value<int>());
       } else if (key == "interface_name") {
@@ -754,6 +751,8 @@ StreamSink json_to_sink(const std::string& id, const std::string& json) {
     sink.ignore_refclk_gmid = pt.get<bool>("ignore_refclk_gmid");
     /* multi-rate Stage 1: optional, defaults to PCM 0 for back-compat. */
     sink.pcm = pt.get<uint8_t>("pcm", 0);
+    /* lean streamer: optional opt-in, defaults to false. */
+    sink.stream = pt.get<bool>("stream", false);
     /* source map determite the association with
        ALSA input channels used to recording */
     BOOST_FOREACH (boost::property_tree::ptree::value_type& v,
@@ -910,6 +909,7 @@ static void parse_json_sinks(boost::property_tree::ptree& pt,
     sink.delay = v.second.get<uint32_t>("delay");
     sink.ignore_refclk_gmid = v.second.get<bool>("ignore_refclk_gmid");
     sink.pcm = v.second.get<uint8_t>("pcm", 0);
+    sink.stream = v.second.get<bool>("stream", false);
     /* source map determite the association with
        ALSA input channels used to recording */
     BOOST_FOREACH (const boost::property_tree::ptree::value_type& vm,

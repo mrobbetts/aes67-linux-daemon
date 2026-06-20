@@ -54,7 +54,6 @@ class Config extends Component {
       sapInterval: '',
       sapIntervalErr: false,
       mdnsEnabled: false,
-      streamerEnabled: false,
       streamerChannels: 0,
       streamerChIntervalErr: false,
       streamerFiles: 0,
@@ -111,7 +110,6 @@ class Config extends Component {
             sapMcastAddr: data.sap_mcast_addr,
             sapInterval: data.sap_interval,
             mdnsEnabled: data.mdns_enabled,
-            streamerEnabled: data.streamer_enabled,
             streamerChannels: data.streamer_channels,
             streamerFiles: data.streamer_files_num,
             streamerFileDuration: data.streamer_file_duration,
@@ -173,7 +171,6 @@ class Config extends Component {
       this.state.mdnsEnabled,
       this.state.customNodeId,
       this.state.autoSinksUpdate,
-      this.state.streamerEnabled,
       this.state.streamerChannels,
       this.state.streamerFiles,
       this.state.streamerFileDuration,
@@ -215,10 +212,6 @@ class Config extends Component {
         <br/>
 	{this.state.isConfigLoading ? <Loader/> : <h3>HTTP Streamer Config</h3>}
         <table><tbody>
-          <tr height="35">
-            <th align="left"> <label>Streamer enabled</label> </th>
-            <th align="left"> <input type="checkbox" onChange={e => this.setState({streamerEnabled: e.target.checked})} checked={this.state.streamerEnabled ? true : undefined}/> </th>
-          </tr>
           <tr>
             <th align="left"> <label>Streamer channels</label> </th>
 	    <th align="left"> <input type='number' min='2' max='16' className='input-number' value={this.state.streamerChannels} onChange={e => this.setState({streamerChannels: e.target.value, streamerChIntervalErr: !e.currentTarget.checkValidity()})} required/> </th>

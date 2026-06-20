@@ -198,8 +198,7 @@ bool Config::save(const Config& config) {
         get_streamer_file_duration() != config.get_streamer_file_duration() ||
         get_streamer_files_num() != config.get_streamer_files_num() ||
         get_streamer_player_buffer_files_num() !=
-            config.get_streamer_player_buffer_files_num() ||
-        get_streamer_enabled() != config.get_streamer_enabled();
+            config.get_streamer_player_buffer_files_num();
 
     if (!daemon_restart_)
       *this = config;
@@ -217,13 +216,6 @@ std::string Config::get_node_id() const {
   } else {
     return custom_node_id_;
   }
-}
-
-bool Config::get_streamer_enabled() const {
-#ifndef _USE_STREAMER_
-  return false;
-#endif
-  return streamer_enabled_;
 }
 
 bool Config::get_mdns_enabled() const {

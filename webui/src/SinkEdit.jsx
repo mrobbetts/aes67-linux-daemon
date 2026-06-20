@@ -59,6 +59,7 @@ class SinkEdit extends Component {
       io: this.props.sink.io,
       delay: this.props.sink.delay,
       ignoreRefclkGmid: this.props.sink.ignore_refclk_gmid,
+      stream: this.props.sink.stream !== undefined ? this.props.sink.stream : false,
       useSdp: this.props.sink.use_sdp,
       source: this.props.sink.source,
       sourceErr: false,
@@ -106,6 +107,7 @@ class SinkEdit extends Component {
       this.state.ignoreRefclkGmid,
       this.state.map,
       this.state.pcm,
+      this.state.stream,
       this.props.isEdit)
     .then(function(response) {
       this.props.applyEdit();
@@ -236,6 +238,10 @@ class SinkEdit extends Component {
             <tr height="35">
               <th align="left"> <label>Ignore RefClk GMID</label> </th>
               <th align="left"> <input type="checkbox" defaultChecked={this.state.ignoreRefclkGmid} onChange={e => this.setState({ignoreRefclkGmid: e.target.checked})} /> </th>
+            </tr>
+            <tr height="35">
+              <th align="left"> <label>HTTP stream</label> </th>
+              <th align="left"> <input type="checkbox" defaultChecked={this.state.stream} onChange={e => this.setState({stream: e.target.checked})} /> </th>
             </tr>
             <tr>
               <th align="left"> <label>Channels</label> </th>

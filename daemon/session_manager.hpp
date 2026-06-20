@@ -66,6 +66,10 @@ struct StreamSink {
   std::vector<uint8_t> map;
   /* multi-rate Stage 1: which PCM (hw:RAVENNA,pcm) this sink writes into. */
   uint8_t pcm{0};
+  /* lean streamer: opt-in per sink. Only sinks with stream==true are AAC-encoded
+   * and served over HTTP. The streamer captures the lowest-pcm streamed sink's
+   * PCM (one capture context at a time). Optional in JSON, defaults to false. */
+  bool stream{false};
 };
 
 /* W10.2 runtime multi-card. A Card is one ALSA snd_card = one PTP clock domain

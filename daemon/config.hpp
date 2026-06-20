@@ -151,7 +151,6 @@ class Config {
     return streamer_player_buffer_files_num_;
   };
   uint8_t get_streamer_channels() const { return streamer_channels_; };
-  bool get_streamer_enabled() const;
   int get_log_severity() const { return log_severity_; };
   uint32_t get_tic_frame_size_at_1fs() const { return tic_frame_size_at_1fs_; };
   uint32_t get_max_tic_frame_size() const { return max_tic_frame_size_; };
@@ -231,9 +230,6 @@ class Config {
       uint8_t streamer_player_buffer_files_num) {
     streamer_player_buffer_files_num_ = streamer_player_buffer_files_num;
   };
-  void set_streamer_enabled(uint8_t streamer_enabled) {
-    streamer_enabled_ = streamer_enabled;
-  };
   void set_log_severity(int log_severity) { log_severity_ = log_severity; };
   void set_tic_frame_size_at_1fs(uint32_t tic_frame_size_at_1fs) {
     tic_frame_size_at_1fs_ = tic_frame_size_at_1fs;
@@ -301,7 +297,6 @@ class Config {
                rhs.get_streamer_file_duration() ||
            lhs.get_streamer_player_buffer_files_num() !=
                rhs.get_streamer_player_buffer_files_num() ||
-           lhs.get_streamer_enabled() != rhs.get_streamer_enabled() ||
            lhs.get_log_severity() != rhs.get_log_severity() ||
            lhs.get_tic_frame_size_at_1fs() != rhs.get_tic_frame_size_at_1fs() ||
            lhs.get_max_tic_frame_size() != rhs.get_max_tic_frame_size() ||
@@ -336,7 +331,6 @@ class Config {
   uint8_t streamer_files_num_{8};
   uint16_t streamer_file_duration_{1};
   uint8_t streamer_player_buffer_files_num_{1};
-  bool streamer_enabled_{false};
   int log_severity_{2};
   uint32_t tic_frame_size_at_1fs_{48};
   uint32_t max_tic_frame_size_{1024};
