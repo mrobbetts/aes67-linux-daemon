@@ -374,6 +374,16 @@ std::error_code DriverManager::set_playout_delay(uint8_t pcm_id, int32_t delay) 
   return retcode_;
 }
 
+std::error_code DriverManager::set_capture_delay(uint8_t pcm_id, int32_t delay) {
+  /* Payload: {int32_t pcm_id, int32_t delay_in_samples}. Advisory ALSA capture
+   * latency (snd_pcm_delay()); the real receive buffering is the sink link
+   * offset. Was never sent before W9 #14 (capture delay was dead end-to-end). */
+  int32_t buf[2] = { pcm_id, delay };
+  this->send_command(MT_ALSA_Msg_SetCaptureDelay, sizeof(buf),
+                     reinterpret_cast<const uint8_t*>(buf));
+  return retcode_;
+}
+
 std::error_code DriverManager::get_sample_rate(uint32_t& sample_rate) {
   this->send_command(MT_ALSA_Msg_GetSampleRate);
   if (!retcode_) {

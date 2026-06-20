@@ -505,19 +505,24 @@ std::error_code SessionManager::bring_up_card_(const Card& card,
     (void)driver_->remove_card(card.handle);
     return ec;
   }
-  /* playout_delay is still manager-wide in the kernel (per-pcm is W9 remainder):
-   * apply pcm_id 0's once. Warn on any non-zero delay carried by other pcms. */
+  /* W9 #14: advisory ALSA latency, per-PCM. playout_delay inherits the
+   * daemon-wide default when the PCM leaves it 0 (mirrors sample_rate,
+   * Decision 10); capture_delay has no global default. Both are now real
+   * per-chip properties in the kernel — read at prepare() into runtime->delay.
+   * (The real RTP buffering depth is the per-sink link offset, not these.) */
   for (const auto& pcm : ordered) {
-    if (pcm.pcm_id == 0) {
-      if (auto ec = driver_->set_playout_delay(0, pcm.playout_delay)) {
-        BOOST_LOG_TRIVIAL(warning)
-            << "session_manager:: set_playout_delay failed: " << ec.message();
-      }
-    } else if (pcm.playout_delay != 0) {
+    const int32_t playout = pcm.playout_delay
+                                ? pcm.playout_delay
+                                : (int32_t)config_->get_playout_delay();
+    if (auto ec = driver_->set_playout_delay(pcm.pcm_id, playout)) {
       BOOST_LOG_TRIVIAL(warning)
-          << "session_manager:: per-pcm playout_delay not supported yet; "
-             "ignoring playout_delay=" << pcm.playout_delay << " on pcm \""
-          << pcm.name << "\" (pcm_id " << (int)pcm.pcm_id << ")";
+          << "session_manager:: set_playout_delay(pcm_id " << (int)pcm.pcm_id
+          << ") failed: " << ec.message();
+    }
+    if (auto ec = driver_->set_capture_delay(pcm.pcm_id, pcm.capture_delay)) {
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: set_capture_delay(pcm_id " << (int)pcm.pcm_id
+          << ") failed: " << ec.message();
     }
   }
   cards_[card.handle] = card;
