@@ -2322,11 +2322,22 @@ bool SessionManager::worker() {
           }
           std::map<uint8_t, PTPStatus> statuses;
           for (uint8_t d : domains) {
+            PTPStatus ps;
+            if (d == 0) {
+              /* domain 0 was just polled above for ptp_status_; the kernel
+               * clears its jitter-since-read on each read, so re-polling here
+               * would report ~0 — reuse that first read instead. */
+              ps.gmid = ptp_clock_id;
+              ps.jitter = ptp_status.i32ClockJitter;
+              ps.status = new_ptp_status.empty() ? ptp_status_.status
+                                                 : new_ptp_status;
+              statuses[0] = ps;
+              continue;
+            }
             TPTPStatus ds;
             if (driver_->get_ptp_status(d, ds)) {
               continue;
             }
-            PTPStatus ps;
             char id[24];
             const uint8_t* g = reinterpret_cast<uint8_t*>(&ds.ui64GMID);
             snprintf(id, sizeof(id), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X",
