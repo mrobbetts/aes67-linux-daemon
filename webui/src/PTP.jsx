@@ -56,15 +56,11 @@ class PTPConfig extends Component {
   render() {
     return (
      <div>
-      <h3>Config</h3>
+      <h3>Global</h3>
       <table><tbody>
         <tr>
           <th align="left"> <label>Type</label> </th>
           <th align="left"> <label>PTPv2</label> </th>
-        </tr>
-        <tr>
-          <th align="left"> <label>Domain</label> </th>
-           <th align="left"> <input type='number' min='0' max='127' className='input-number' value={this.state.domain} onChange={e => this.setState({domain: e.target.value, domainErr: !e.currentTarget.checkValidity()})} required/> </th>
         </tr>
         <tr>
           <th align="left"> <label>DSCP</label> </th>
@@ -99,6 +95,8 @@ class PTPDomainStatus extends Component {
   render() {
     const color = this.props.status === 'locked' ? '#2a0'
                 : this.props.status === 'locking' ? '#d90' : '#c00';
+    // no grandmaster when unlocked -> don't show a stale/zeroed GMID.
+    const gmid = this.props.status === 'unlocked' ? '—' : this.props.gmid;
     return (
      <div style={{marginBottom: '1em'}}>
       <h3>Domain {this.props.domain}&nbsp;&nbsp;
@@ -108,10 +106,10 @@ class PTPDomainStatus extends Component {
       <table><tbody>
         <tr>
           <th align="left"> <label>GMID</label> </th>
-          <th align="left"> <input size="30" value={this.props.gmid} disabled/> </th>
+          <th align="left"> <input size="30" value={gmid} disabled/> </th>
         </tr>
         <tr>
-          <th align="left"> <label>Delta (ns)</label> </th>
+          <th align="left"> <label>Clock jitter</label> </th>
           <th align="left"> <input value={this.props.jitter} disabled/> </th>
         </tr>
       </tbody></table>
