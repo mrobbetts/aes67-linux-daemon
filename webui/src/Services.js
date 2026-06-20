@@ -28,6 +28,7 @@ const sources = '/sources';
 const sinks = '/sinks';
 const ptpConfig = '/ptp/config';
 const ptpStatus = '/ptp/status';
+const ptpDomains = '/ptp/domains';
 const source = '/source';
 const sdp = '/sdp';
 const sink = '/sink';
@@ -223,6 +224,14 @@ export default class RestAPI {
   static getPTPStatus() {
     return this.doFetch(ptpStatus).catch(err => {
       toast.error('PTP status get failed: ' + err.message)
+      return Promise.reject(Error(err.message));
+    });
+  }
+
+  // W11: per-domain PTP status (the active domains) for the Clocks view
+  static getPTPDomains() {
+    return this.doFetch(ptpDomains).catch(err => {
+      toast.error('PTP domains get failed: ' + err.message)
       return Promise.reject(Error(err.message));
     });
   }

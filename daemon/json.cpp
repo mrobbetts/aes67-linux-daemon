@@ -274,6 +274,23 @@ std::string ptp_status_to_json(const PTPStatus& status) {
   return ss.str();
 }
 
+/* W11: per-domain PTP status for the Clocks view — one object per active domain
+ * (the distinct card domains the daemon mirrors). */
+std::string ptp_domains_to_json(const std::map<uint8_t, PTPStatus>& by_domain) {
+  std::stringstream ss;
+  ss << "{\n  \"domains\": [";
+  bool first = true;
+  for (const auto& [domain, status] : by_domain) {
+    ss << (first ? "\n    " : ",\n    ") << "{ \"domain\": " << unsigned(domain)
+       << ", \"status\": \"" << escape_json(status.status) << "\""
+       << ", \"gmid\": \"" << escape_json(status.gmid) << "\""
+       << ", \"jitter\": " << status.jitter << " }";
+    first = false;
+  }
+  ss << (first ? "" : "\n  ") << "]\n}\n";
+  return ss.str();
+}
+
 std::string sources_to_json(const std::list<StreamSource>& sources) {
   int count = 0;
   std::stringstream ss;
