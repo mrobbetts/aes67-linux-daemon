@@ -291,6 +291,20 @@ std::string ptp_domains_to_json(const std::map<uint8_t, PTPStatus>& by_domain) {
   return ss.str();
 }
 
+/* #22: per-PCM TIC-engine lock for the Cards per-PCM dots. */
+std::string pcm_clocks_to_json(const std::map<uint8_t, std::string>& by_pcm) {
+  std::stringstream ss;
+  ss << "{\n  \"pcms\": [";
+  bool first = true;
+  for (const auto& [pcm_id, status] : by_pcm) {
+    ss << (first ? "\n    " : ",\n    ") << "{ \"pcm_id\": " << unsigned(pcm_id)
+       << ", \"tic_status\": \"" << escape_json(status) << "\" }";
+    first = false;
+  }
+  ss << (first ? "" : "\n  ") << "]\n}\n";
+  return ss.str();
+}
+
 std::string sources_to_json(const std::list<StreamSource>& sources) {
   int count = 0;
   std::stringstream ss;

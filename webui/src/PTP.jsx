@@ -95,8 +95,11 @@ class PTPDomainStatus extends Component {
   render() {
     const color = this.props.status === 'locked' ? '#2a0'
                 : this.props.status === 'locking' ? '#d90' : '#c00';
-    // no grandmaster when unlocked -> don't show a stale/zeroed GMID.
-    const gmid = this.props.status === 'unlocked' ? '—' : this.props.gmid;
+    // when unlocked there is no valid reference clock, so neither the
+    // grandmaster id nor the recovery jitter is meaningful — blank both.
+    const meaningful = this.props.status !== 'unlocked';
+    const gmid = meaningful ? this.props.gmid : '—';
+    const jitter = meaningful ? this.props.jitter : '—';
     return (
      <div style={{marginBottom: '1em'}}>
       <h3>Domain {this.props.domain}&nbsp;&nbsp;
@@ -110,7 +113,7 @@ class PTPDomainStatus extends Component {
         </tr>
         <tr>
           <th align="left"> <label>Clock jitter</label> </th>
-          <th align="left"> <input value={this.props.jitter} disabled/> </th>
+          <th align="left"> <input value={jitter} disabled/> </th>
         </tr>
       </tbody></table>
      </div>

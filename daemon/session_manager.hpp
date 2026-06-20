@@ -265,6 +265,8 @@ class SessionManager {
   void get_ptp_status(PTPStatus& status) const;
   /* W11: per-domain status for the active domains (the Clocks view). */
   void get_ptp_status_by_domain(std::map<uint8_t, PTPStatus>& status) const;
+  /* #22: per-PCM TIC-engine lock (keyed by pcm_id) for the Cards per-PCM dots. */
+  void get_pcm_clocks(std::map<uint8_t, std::string>& status) const;
 
   bool load_status();
   bool save_status() const;
@@ -384,6 +386,9 @@ class SessionManager {
    * stays the domain-0 status for /api/ptp/status + observers. Guarded by
    * ptp_mutex_. */
   std::map<uint8_t, PTPStatus> ptp_status_by_domain_;
+  /* #22: per-PCM TIC-engine lock (keyed by pcm_id), mirrored from the kernel by
+   * the worker for the Cards per-PCM dots. Guarded by ptp_mutex_. */
+  std::map<uint8_t, std::string> ptp_pcm_status_;
   mutable std::shared_mutex ptp_mutex_;
 
   std::list<SourceObserver> add_source_observers_;

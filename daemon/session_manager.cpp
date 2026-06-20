@@ -2080,6 +2080,12 @@ void SessionManager::get_ptp_status_by_domain(
   status = ptp_status_by_domain_;
 }
 
+void SessionManager::get_pcm_clocks(
+    std::map<uint8_t, std::string>& status) const {
+  std::shared_lock ptp_lock(ptp_mutex_);
+  status = ptp_pcm_status_;
+}
+
 size_t SessionManager::process_sap() {
   size_t sdp_len_sum = 0;
   // set to contain sources currently announced
@@ -2356,6 +2362,20 @@ bool SessionManager::worker() {
             (void)driver_->set_sample_rate(sample_rate);
           }
           on_update_sources();
+        }
+
+        /* #22: mirror each PCM's TIC-engine lock (keyed by pcm_id) for the Cards
+         * per-PCM dots — poll into an immutable map, then assign once. */
+        std::map<uint8_t, std::string> pcm_status;
+        for (const auto& pcm : get_pcms()) {
+          TPCMStatus ps;
+          if (!driver_->get_pcm_status(pcm.pcm_id, ps)) {
+            pcm_status[pcm.pcm_id] = ptp_lock_status_str(ps.nTICLockStatus);
+          }
+        }
+        {
+          std::unique_lock<std::shared_mutex> lk(ptp_mutex_);
+          ptp_pcm_status_ = std::move(pcm_status);
         }
       }
       ptp_interval = 10;

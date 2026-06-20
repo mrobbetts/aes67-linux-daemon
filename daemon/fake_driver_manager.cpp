@@ -121,6 +121,13 @@ std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status
   return std::error_code{};
 }
 
+std::error_code DriverManager::get_pcm_status(int32_t pcm_id,
+                                              TPCMStatus& status) {
+  (void)pcm_id;
+  status.nTICLockStatus = PTPLS_UNLOCKED;
+  return std::error_code{};
+}
+
 std::error_code DriverManager::set_interface_name(const std::string& ifname) {
   return std::error_code{};
 }
