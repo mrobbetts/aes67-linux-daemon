@@ -40,6 +40,7 @@ class Cards extends Component {
       sources: [],
       sinks: [],
       ptpDomains: [],
+      pcmClocks: [],
       isLoading: false,
       cardEditIsOpen: false,
       isCardEdit: false,
@@ -79,30 +80,45 @@ class Cards extends Component {
         isLoading: false
       });
     }).catch(() => this.setState({isLoading: false}));
-    this.fetchPtpDomains();
+    this.fetchClocks();
   }
 
-  // poll just the per-domain PTP lock state, for the live per-card lock badge.
-  fetchPtpDomains() {
-    RestAPI.getPTPDomains().then(r => r.json())
-      .then(data => this.setState({ptpDomains: data.domains || []}))
-      .catch(() => {});
+  // poll the live clock state for the badges: per-domain (card) + per-PCM (TIC).
+  fetchClocks() {
+    Promise.all([
+      RestAPI.getPTPDomains().then(r => r.json()),
+      RestAPI.getPcmClocks().then(r => r.json())
+    ]).then(([domains, pcms]) => this.setState({
+      ptpDomains: domains.domains || [],
+      pcmClocks: pcms.pcms || []
+    })).catch(() => {});
   }
 
-  // a coloured dot for a card's domain lock state (green locked / amber locking
-  // / red unlocked or unknown). Pairs with the full Clocks view in the PTP tab.
-  lockDot(domain) {
-    const d = this.state.ptpDomains.find(x => x.domain === domain);
-    const status = d ? d.status : 'unlocked';
+  // a coloured dot for a clock status string (green locked / amber locking /
+  // red unlocked or unknown).
+  statusDot(status, title) {
     const color = status === 'locked' ? '#2a0'
                 : status === 'locking' ? '#d90' : '#c00';
-    return (<span title={'PTP domain ' + domain + ': ' + status}
+    return (<span title={title + ': ' + status}
               style={{color: color}}>&#9679;</span>);
+  }
+
+  // a card's PTP domain lock; pairs with the full Clocks view in the PTP tab.
+  lockDot(domain) {
+    const d = this.state.ptpDomains.find(x => x.domain === domain);
+    return this.statusDot(d ? d.status : 'unlocked', 'PTP domain ' + domain);
+  }
+
+  // a PCM's TIC engine lock — is this media clock actually tracking?
+  pcmLockDot(pcmId) {
+    const p = this.state.pcmClocks.find(x => x.pcm_id === pcmId);
+    return this.statusDot(p ? p.tic_status : 'unlocked',
+                          'TIC engine (pcm ' + pcmId + ')');
   }
 
   componentDidMount() {
     this.fetchAll();
-    this.ptpInterval = setInterval(() => { this.fetchPtpDomains() }, 3000);
+    this.ptpInterval = setInterval(() => { this.fetchClocks() }, 3000);
   }
 
   componentWillUnmount() {
@@ -206,7 +222,7 @@ class Cards extends Component {
                       return (
                         <div className='tree-pcm' key={p.pcm_id} style={{marginLeft: '20px', marginTop: '6px'}}>
                           <div>
-                            ▸ <b>{p.name}</b> &nbsp;
+                            ▸ <b>{p.name}</b> &nbsp;{this.pcmLockDot(p.pcm_id)} &nbsp;
                             <font color='grey'>
                               {p.sample_rate} Hz · {p.num_inputs} in / {p.num_outputs} out · hw:{card.name},{p.device_index}
                             </font>

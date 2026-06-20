@@ -177,6 +177,14 @@ bool HttpServer::init() {
     res.body = ptp_domains_to_json(by_domain);
   });
 
+  /* #22: per-PCM TIC-engine lock for the Cards per-PCM dots */
+  svr_.Get("/api/pcm/clocks", [this](const Request& req, Response& res) {
+    std::map<uint8_t, std::string> by_pcm;
+    session_manager_->get_pcm_clocks(by_pcm);
+    set_headers(res, "application/json");
+    res.body = pcm_clocks_to_json(by_pcm);
+  });
+
   /* get ptp config */
   svr_.Get("/api/ptp/config", [this](const Request& req, Response& res) {
     PTPConfig ptpConfig;

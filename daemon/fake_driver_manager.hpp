@@ -38,6 +38,7 @@ class DriverManager {
   std::error_code set_ptp_config(const TPTPConfig& config);
   std::error_code get_ptp_config(TPTPConfig& config);
   std::error_code get_ptp_status(uint8_t domain, TPTPStatus& status);
+  std::error_code get_pcm_status(int32_t pcm_id, TPCMStatus& status);
   std::error_code set_interface_name(const std::string& ifname);
   /* W10 multi-card: mirror the real DriverManager's card lifecycle. */
   std::error_code add_card(uint8_t card_handle,

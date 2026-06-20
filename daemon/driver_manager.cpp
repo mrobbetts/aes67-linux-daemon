@@ -200,6 +200,16 @@ std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status
   return retcode_;
 }
 
+std::error_code DriverManager::get_pcm_status(int32_t pcm_id,
+                                              TPCMStatus& status) {
+  this->send_command(MT_ALSA_Msg_GetPCMStatus, sizeof(pcm_id),
+                     reinterpret_cast<const uint8_t*>(&pcm_id));
+  if (!retcode_) {
+    memcpy(&status, recv_data_, sizeof(TPCMStatus));
+  }
+  return retcode_;
+}
+
 std::error_code DriverManager::set_interface_name(const std::string& ifname) {
   BOOST_LOG_TRIVIAL(info) << "driver_manager:: setting interface " << ifname;
   this->send_command(MT_ALSA_Msg_SetInterfaceName, ifname.length() + 1,
