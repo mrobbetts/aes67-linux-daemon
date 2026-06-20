@@ -2243,9 +2243,28 @@ void SessionManager::on_ptp_status_changed(const std::string& status) const {
 using namespace std::chrono;
 using second_t = duration<double, std::ratio<1> >;
 
+namespace {
+// Pure: the kernel's PTP status -> the daemon's PTPStatus view.
+const char* ptp_lock_status_str(int s) {
+  switch (s) {
+    case PTPLS_LOCKING: return "locking";
+    case PTPLS_LOCKED:  return "locked";
+    default:            return "unlocked";
+  }
+}
+
+PTPStatus to_ptp_status(const TPTPStatus& ds) {
+  char id[24];
+  const uint8_t* g = reinterpret_cast<const uint8_t*>(&ds.ui64GMID);
+  snprintf(id, sizeof(id), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", g[0],
+           g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+  return PTPStatus{ptp_lock_status_str(ds.nPTPLockStatus), id,
+                   ds.i32ClockJitter};
+}
+}  // namespace
+
 bool SessionManager::worker() {
   TPTPConfig ptp_config;
-  TPTPStatus ptp_status;
   auto sap_timepoint = steady_clock::now();
   auto ptp_timepoint = steady_clock::now();
   int sap_interval = 1;
@@ -2266,119 +2285,74 @@ bool SessionManager::worker() {
     if ((duration_cast<second_t>(steady_clock::now() - ptp_timepoint).count()) >
         ptp_interval) {
       ptp_timepoint = steady_clock::now();
-      if (driver_->get_ptp_config(ptp_config) ||
-          driver_->get_ptp_status(0, ptp_status)) {
+      /* Poll every relevant PTP domain ONCE into an immutable map, then derive
+       * all views from it (no re-reads, no per-domain special case): poll the
+       * active card domains plus the daemon default (so the legacy single
+       * status always has a value). */
+      if (driver_->get_ptp_config(ptp_config)) {
         BOOST_LOG_TRIVIAL(error)
             << "session_manager:: failed to retrieve PTP clock info";
-        // return false;
       } else {
-        char ptp_clock_id[24];
-        const uint8_t* pui64GMID =
-            reinterpret_cast<uint8_t*>(&ptp_status.ui64GMID);
-        snprintf(ptp_clock_id, sizeof(ptp_clock_id),
-                 "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", pui64GMID[0],
-                 pui64GMID[1], pui64GMID[2], pui64GMID[3], pui64GMID[4],
-                 pui64GMID[5], pui64GMID[6], pui64GMID[7]);
-
-        bool ptp_changed_gmid = false;
-        std::string ptp_status_changed_to;
-        // update PTP clock status
-        ptp_mutex_.lock();
-        // update status
-        if (ptp_status_.gmid != ptp_clock_id) {
-          ptp_status_.gmid = ptp_clock_id;
-          ptp_changed_gmid = true;
+        const uint8_t default_domain = config_->get_ptp_domain();
+        std::set<uint8_t> card_domains;
+        for (const auto& card : get_cards()) {
+          card_domains.insert(card.domain);
         }
-        ptp_status_.jitter = ptp_status.i32ClockJitter;
-        std::string new_ptp_status;
-        switch (ptp_status.nPTPLockStatus) {
-          case PTPLS_UNLOCKED:
-            new_ptp_status = "unlocked";
-            break;
-          case PTPLS_LOCKING:
-            new_ptp_status = "locking";
-            break;
-          case PTPLS_LOCKED:
-            new_ptp_status = "locked";
-            break;
+        std::set<uint8_t> poll_domains = card_domains;
+        poll_domains.insert(default_domain);
+
+        std::map<uint8_t, PTPStatus> statuses;
+        for (uint8_t d : poll_domains) {
+          TPTPStatus ds;
+          if (!driver_->get_ptp_status(d, ds)) {
+            statuses[d] = to_ptp_status(ds);
+          }
         }
 
-        if (ptp_status_.status != new_ptp_status) {
-          BOOST_LOG_TRIVIAL(info)
-              << "session_manager:: new PTP clock status " << new_ptp_status;
-          ptp_status_.status = new_ptp_status;
-          ptp_status_changed_to = new_ptp_status;
+        /* The Clocks mirror is the active (card) domains' subset; the legacy
+         * single status is the default domain's entry. */
+        std::map<uint8_t, PTPStatus> by_domain;
+        for (uint8_t d : card_domains) {
+          auto it = statuses.find(d);
+          if (it != statuses.end()) {
+            by_domain[d] = it->second;
+          }
         }
-        // end update PTP clock status
-        ptp_mutex_.unlock();
+        auto gmids_of = [](const std::map<uint8_t, PTPStatus>& m) {
+          std::map<uint8_t, std::string> g;
+          for (const auto& [d, s] : m) {
+            g[d] = s.gmid;
+          }
+          return g;
+        };
 
-        /* W11: mirror each ACTIVE domain's GMID (the distinct Card.domains) so
-         * get_source_sdp_ can stamp the right per-domain refclk. A change in any
-         * domain's GMID re-advertises sources (folds into ptp_changed_gmid). */
+        std::string status_changed_to;
+        bool gmid_changed;
         {
-          std::set<uint8_t> domains;
-          for (const auto& card : get_cards()) {
-            domains.insert(card.domain);
-          }
-          std::map<uint8_t, PTPStatus> statuses;
-          for (uint8_t d : domains) {
-            PTPStatus ps;
-            if (d == 0) {
-              /* domain 0 was just polled above for ptp_status_; the kernel
-               * clears its jitter-since-read on each read, so re-polling here
-               * would report ~0 — reuse that first read instead. */
-              ps.gmid = ptp_clock_id;
-              ps.jitter = ptp_status.i32ClockJitter;
-              ps.status = new_ptp_status.empty() ? ptp_status_.status
-                                                 : new_ptp_status;
-              statuses[0] = ps;
-              continue;
-            }
-            TPTPStatus ds;
-            if (driver_->get_ptp_status(d, ds)) {
-              continue;
-            }
-            char id[24];
-            const uint8_t* g = reinterpret_cast<uint8_t*>(&ds.ui64GMID);
-            snprintf(id, sizeof(id), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X",
-                     g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
-            ps.gmid = id;
-            ps.jitter = ds.i32ClockJitter;
-            switch (ds.nPTPLockStatus) {
-              case PTPLS_UNLOCKED: ps.status = "unlocked"; break;
-              case PTPLS_LOCKING:  ps.status = "locking";  break;
-              case PTPLS_LOCKED:   ps.status = "locked";   break;
-            }
-            statuses[d] = ps;
-          }
           std::unique_lock<std::shared_mutex> lk(ptp_mutex_);
-          /* re-advertise sources only when a domain's GMID changes (the SDP
-           * carries the gmid, not the lock state). */
-          bool gmid_changed = statuses.size() != ptp_status_by_domain_.size();
-          for (const auto& [d, ps] : statuses) {
-            auto it = ptp_status_by_domain_.find(d);
-            if (it == ptp_status_by_domain_.end() || it->second.gmid != ps.gmid) {
-              gmid_changed = true;
-              break;
+          /* the SDP refclk carries the gmid, not the lock state, so re-advertise
+           * only when some active domain's grandmaster changed. */
+          gmid_changed = gmids_of(by_domain) != gmids_of(ptp_status_by_domain_);
+          ptp_status_by_domain_ = std::move(by_domain);
+          auto pit = statuses.find(default_domain);
+          if (pit != statuses.end()) {
+            if (ptp_status_.status != pit->second.status) {
+              status_changed_to = pit->second.status;
             }
-          }
-          ptp_status_by_domain_ = std::move(statuses);
-          if (gmid_changed) {
-            ptp_changed_gmid = true;
+            ptp_status_ = pit->second;
           }
         }
 
-        if (!ptp_status_changed_to.empty()) {
-          on_ptp_status_changed(ptp_status_changed_to);
+        if (!status_changed_to.empty()) {
+          BOOST_LOG_TRIVIAL(info)
+              << "session_manager:: new PTP clock status " << status_changed_to;
+          on_ptp_status_changed(status_changed_to);
         }
-
-        if (ptp_changed_gmid ||
+        if (gmid_changed ||
             sample_rate != driver_->get_current_sample_rate()) {
-          /* master clock id changed or sample rate changed
-           * we need to update all the sources */
+          // a grandmaster id changed or the sample rate changed: re-advertise.
           if (sample_rate != driver_->get_current_sample_rate()) {
             sample_rate = driver_->get_current_sample_rate();
-            // set driver sample rate
             (void)driver_->set_sample_rate(sample_rate);
           }
           on_update_sources();
