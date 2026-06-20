@@ -169,6 +169,14 @@ bool HttpServer::init() {
     res.body = ptp_status_to_json(status);
   });
 
+  /* W11: per-domain ptp status (the active domains) for the Clocks view */
+  svr_.Get("/api/ptp/domains", [this](const Request& req, Response& res) {
+    std::map<uint8_t, PTPStatus> by_domain;
+    session_manager_->get_ptp_status_by_domain(by_domain);
+    set_headers(res, "application/json");
+    res.body = ptp_domains_to_json(by_domain);
+  });
+
   /* get ptp config */
   svr_.Get("/api/ptp/config", [this](const Request& req, Response& res) {
     PTPConfig ptpConfig;

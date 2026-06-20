@@ -39,6 +39,7 @@ class Cards extends Component {
       pcms: [],
       sources: [],
       sinks: [],
+      ptpDomains: [],
       isLoading: false,
       cardEditIsOpen: false,
       isCardEdit: false,
@@ -78,10 +79,34 @@ class Cards extends Component {
         isLoading: false
       });
     }).catch(() => this.setState({isLoading: false}));
+    this.fetchPtpDomains();
+  }
+
+  // poll just the per-domain PTP lock state, for the live per-card lock badge.
+  fetchPtpDomains() {
+    RestAPI.getPTPDomains().then(r => r.json())
+      .then(data => this.setState({ptpDomains: data.domains || []}))
+      .catch(() => {});
+  }
+
+  // a coloured dot for a card's domain lock state (green locked / amber locking
+  // / red unlocked or unknown). Pairs with the full Clocks view in the PTP tab.
+  lockDot(domain) {
+    const d = this.state.ptpDomains.find(x => x.domain === domain);
+    const status = d ? d.status : 'unlocked';
+    const color = status === 'locked' ? '#2a0'
+                : status === 'locking' ? '#d90' : '#c00';
+    return (<span title={'PTP domain ' + domain + ': ' + status}
+              style={{color: color}}>&#9679;</span>);
   }
 
   componentDidMount() {
     this.fetchAll();
+    this.ptpInterval = setInterval(() => { this.fetchPtpDomains() }, 3000);
+  }
+
+  componentWillUnmount() {
+    clearInterval(this.ptpInterval);
   }
 
   applyEdit() {
@@ -163,7 +188,7 @@ class Cards extends Component {
                 <div className='tree-card' key={card.name}
                   style={{border: '1px solid #ccc', borderRadius: '6px', margin: '8px 0', padding: '8px'}}>
                   <div className='tree-card-head'>
-                    <b>{card.name}</b> &nbsp;<font color='grey'>(domain {card.domain})</font>
+                    <b>{card.name}</b> &nbsp;<font color='grey'>(domain {card.domain})</font>&nbsp;{this.lockDot(card.domain)}
                     &nbsp;&nbsp;
                     <span className='pointer-area' title='Add PCM' onClick={() => this.onAddPcm(card.name)}>
                       <img width='20' height='20' src='/plus.png' alt='+pcm'/> </span>

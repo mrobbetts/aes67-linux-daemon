@@ -1526,9 +1526,9 @@ std::string SessionManager::get_source_sdp_(uint32_t id,
    * ptp_mutex_ is held shared above. */
   std::string refclk_gmid = ptp_status_.gmid;
   {
-    auto it = ptp_gmid_by_domain_.find(domain);
-    if (it != ptp_gmid_by_domain_.end() && !it->second.empty()) {
-      refclk_gmid = it->second;
+    auto it = ptp_status_by_domain_.find(domain);
+    if (it != ptp_status_by_domain_.end() && !it->second.gmid.empty()) {
+      refclk_gmid = it->second.gmid;
     }
   }
   auto [ip_addr, sec_ip_str] = get_interface_ip(config_->get_interface_name(1));
@@ -2074,6 +2074,12 @@ void SessionManager::get_ptp_status(PTPStatus& status) const {
   status = ptp_status_;
 }
 
+void SessionManager::get_ptp_status_by_domain(
+    std::map<uint8_t, PTPStatus>& status) const {
+  std::shared_lock ptp_lock(ptp_mutex_);
+  status = ptp_status_by_domain_;
+}
+
 size_t SessionManager::process_sap() {
   size_t sdp_len_sum = 0;
   // set to contain sources currently announced
@@ -2314,21 +2320,39 @@ bool SessionManager::worker() {
           for (const auto& card : get_cards()) {
             domains.insert(card.domain);
           }
-          std::map<uint8_t, std::string> gmids;
+          std::map<uint8_t, PTPStatus> statuses;
           for (uint8_t d : domains) {
             TPTPStatus ds;
-            if (!driver_->get_ptp_status(d, ds)) {
-              char id[24];
-              const uint8_t* g = reinterpret_cast<uint8_t*>(&ds.ui64GMID);
-              snprintf(id, sizeof(id),
-                       "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", g[0], g[1],
-                       g[2], g[3], g[4], g[5], g[6], g[7]);
-              gmids[d] = id;
+            if (driver_->get_ptp_status(d, ds)) {
+              continue;
             }
+            PTPStatus ps;
+            char id[24];
+            const uint8_t* g = reinterpret_cast<uint8_t*>(&ds.ui64GMID);
+            snprintf(id, sizeof(id), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X",
+                     g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+            ps.gmid = id;
+            ps.jitter = ds.i32ClockJitter;
+            switch (ds.nPTPLockStatus) {
+              case PTPLS_UNLOCKED: ps.status = "unlocked"; break;
+              case PTPLS_LOCKING:  ps.status = "locking";  break;
+              case PTPLS_LOCKED:   ps.status = "locked";   break;
+            }
+            statuses[d] = ps;
           }
           std::unique_lock<std::shared_mutex> lk(ptp_mutex_);
-          if (gmids != ptp_gmid_by_domain_) {
-            ptp_gmid_by_domain_ = std::move(gmids);
+          /* re-advertise sources only when a domain's GMID changes (the SDP
+           * carries the gmid, not the lock state). */
+          bool gmid_changed = statuses.size() != ptp_status_by_domain_.size();
+          for (const auto& [d, ps] : statuses) {
+            auto it = ptp_status_by_domain_.find(d);
+            if (it == ptp_status_by_domain_.end() || it->second.gmid != ps.gmid) {
+              gmid_changed = true;
+              break;
+            }
+          }
+          ptp_status_by_domain_ = std::move(statuses);
+          if (gmid_changed) {
             ptp_changed_gmid = true;
           }
         }

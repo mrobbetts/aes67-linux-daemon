@@ -263,6 +263,8 @@ class SessionManager {
                                     uint32_t value) const;
   void get_ptp_config(PTPConfig& config) const;
   void get_ptp_status(PTPStatus& status) const;
+  /* W11: per-domain status for the active domains (the Clocks view). */
+  void get_ptp_status_by_domain(std::map<uint8_t, PTPStatus>& status) const;
 
   bool load_status();
   bool save_status() const;
@@ -376,10 +378,12 @@ class SessionManager {
 
   PTPConfig ptp_config_;
   PTPStatus ptp_status_;
-  /* W11: per-domain GMID (keyed by domain number) for the SDP refclk, mirrored
-   * from the kernel per active domain by the worker. ptp_status_ stays the
-   * domain-0 status for /api/ptp/status + observers. Guarded by ptp_mutex_. */
-  std::map<uint8_t, std::string> ptp_gmid_by_domain_;
+  /* W11: per-domain PTP status (keyed by domain number) for the active domains
+   * (distinct Card.domains), mirrored from the kernel by the worker. Feeds the
+   * SDP refclk (gmid) and GET /api/ptp/domains (the Clocks view). ptp_status_
+   * stays the domain-0 status for /api/ptp/status + observers. Guarded by
+   * ptp_mutex_. */
+  std::map<uint8_t, PTPStatus> ptp_status_by_domain_;
   mutable std::shared_mutex ptp_mutex_;
 
   std::list<SourceObserver> add_source_observers_;

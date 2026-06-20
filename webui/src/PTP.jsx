@@ -88,32 +88,30 @@ class PTPConfig extends Component {
   }
 }
 
-class PTPStatus extends Component {
+class PTPDomainStatus extends Component {
   static propTypes = {
+    domain: PropTypes.number.isRequired,
     status: PropTypes.string.isRequired,
     gmid: PropTypes.string.isRequired,
     jitter: PropTypes.number.isRequired,
   };
 
   render() {
+    const color = this.props.status === 'locked' ? '#2a0'
+                : this.props.status === 'locking' ? '#d90' : '#c00';
     return (
-     <div>
-      <h3>Status</h3>
+     <div style={{marginBottom: '1em'}}>
+      <h3>Domain {this.props.domain}&nbsp;&nbsp;
+        <span style={{color: color}}>&#9679;</span>&nbsp;
+        <span style={{color: color}}>{this.props.status}</span>
+      </h3>
       <table><tbody>
         <tr>
-          <th align="left"> <label>Mode</label> </th>
-          <th align="left"> <input value='Slave' disabled/> </th>
-        </tr>
-        <tr>
-          <th align="left"> <label>Status</label> </th>
-          <th align="left"> <input value={this.props.status} disabled/> </th>
-        </tr>
-        <tr>
           <th align="left"> <label>GMID</label> </th>
-          <th align="left"> <input value={this.props.gmid} disabled/> </th>
+          <th align="left"> <input size="30" value={this.props.gmid} disabled/> </th>
         </tr>
         <tr>
-          <th align="left"> <label>Delta</label> </th>
+          <th align="left"> <label>Delta (ns)</label> </th>
           <th align="left"> <input value={this.props.jitter} disabled/> </th>
         </tr>
       </tbody></table>
@@ -129,23 +127,19 @@ class PTP extends Component {
       domain: 0,
       domainErr: false,
       dscp: 0,
-      status: '',
-      gmid: '',
-      jitter: 0,
+      domains: [],
       isConfigLoading: false,
       isStatusLoading: false,
     };
   }
 
-  fetchStatus() {
+  fetchDomains() {
     this.setState({isStatusLoading: true});
-    RestAPI.getPTPStatus()
+    RestAPI.getPTPDomains()
       .then(response => response.json())
       .then(
         data => this.setState({
-           status: data.status,
-           gmid: data.gmid,
-           jitter: parseInt(data.jitter, 10),
+           domains: data.domains || [],
            isStatusLoading: false
         }))
       .catch(err => this.setState({isStatusLoading: false}));
@@ -165,9 +159,9 @@ class PTP extends Component {
   }
 
   componentDidMount() {
-    this.fetchStatus();
     this.fetchConfig();
-    this.interval = setInterval(() => { this.fetchStatus() }, 10000)
+    this.fetchDomains();
+    this.interval = setInterval(() => { this.fetchDomains() }, 3000)
   }
 
   componentWillUnmount() {
@@ -180,8 +174,12 @@ class PTP extends Component {
         { this.state.isConfigLoading ? <Loader/> :
            <PTPConfig domain={this.state.domain} dscp={this.state.dscp}/> }
         <br/>
-        { this.state.isStatusLoading ? <Loader/> :
-           <PTPStatus status={this.state.status} gmid={this.state.gmid} jitter={this.state.jitter}/> }
+        <h2>Clocks</h2>
+        { this.state.domains.length === 0 ?
+            <p>No active PTP domains &mdash; they appear here as cards use them.</p> :
+            this.state.domains.map(d =>
+              <PTPDomainStatus key={d.domain} domain={d.domain}
+                status={d.status} gmid={d.gmid} jitter={parseInt(d.jitter, 10)}/>) }
       </div>
     )
   }
