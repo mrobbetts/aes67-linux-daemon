@@ -226,6 +226,11 @@ std::error_code DriverManager::set_playout_delay(uint8_t /*pcm_id*/,
   return std::error_code{};
 }
 
+std::error_code DriverManager::set_capture_delay(uint8_t /*pcm_id*/,
+                                                 int32_t /*delay*/) {
+  return std::error_code{};
+}
+
 std::error_code DriverManager::get_sample_rate(uint32_t& sample_rate) {
   sample_rate = sample_rate_;
   BOOST_LOG_TRIVIAL(info) << "fake_driver_manager:: sample rate "
