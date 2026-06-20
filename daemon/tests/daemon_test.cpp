@@ -455,7 +455,6 @@ BOOST_AUTO_TEST_CASE(get_config) {
   auto ip_addr = pt.get<std::string>("ip_addr");
   auto auto_sinks_update = pt.get<bool>("auto_sinks_update");
   auto mdns_enabled = pt.get<bool>("mdns_enabled");
-  auto streamer_enabled = pt.get<bool>("streamer_enabled");
   auto streamer_channels = pt.get<int>("streamer_channels");
   auto streamer_files_num = pt.get<int>("streamer_files_num");
   auto streamer_file_duration = pt.get<int>("streamer_file_duration");
@@ -495,7 +494,6 @@ BOOST_AUTO_TEST_CASE(get_config) {
 #else
   BOOST_CHECK_MESSAGE(mdns_enabled == false, "config as excepcted");
 #endif
-  BOOST_CHECK_MESSAGE(streamer_enabled == false, "config as excepcted");
   BOOST_CHECK_MESSAGE(streamer_channels == 8, "config as excepcted");
   BOOST_CHECK_MESSAGE(streamer_files_num == 6, "config as excepcted");
   BOOST_CHECK_MESSAGE(streamer_file_duration == 3, "config as excepcted");

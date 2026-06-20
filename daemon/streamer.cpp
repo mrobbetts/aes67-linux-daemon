@@ -54,6 +54,9 @@ bool Streamer::init() {
 }
 
 bool Streamer::on_sink_add(uint8_t id) {
+  /* a sink (re)appeared -- it may be a streamed sink, or a PUT that toggled the
+   * stream flag (the REST update path fires remove+add). Re-pick the target. */
+  reconcile_capture();
   return true;
 }
 
@@ -72,18 +75,51 @@ bool Streamer::on_sink_remove(uint8_t id) {
     faac_[id] = nullptr;
   }
   total_sink_samples_[id] = 0;
+  /* the removed sink may have been the capture target -- re-pick. */
+  reconcile_capture();
   return true;
 }
 
 bool Streamer::on_ptp_status_change(const std::string& status) {
   BOOST_LOG_TRIVIAL(info) << "Streamer: new ptp status " << status;
   if (status == "locked") {
-    return start_capture();
-  }
-  if (status == "unlocked") {
-    return stop_capture();
+    reconcile_capture();
+  } else if (status == "unlocked") {
+    stop_capture();
   }
   return true;
+}
+
+/* lean streamer: the single capture context follows the lowest-pcm streamed
+ * sink. Stop if there is nothing to stream or PTP is unlocked; otherwise ensure
+ * we are capturing the target PCM, restarting if it changed. */
+void Streamer::reconcile_capture() {
+  /* compute target = lowest pcm id among sinks with stream==true */
+  bool have_target = false;
+  uint8_t target_pcm = 0;
+  for (const auto& sink : session_manager_->get_sinks()) {
+    if (!sink.stream) {
+      continue;
+    }
+    if (!have_target || sink.pcm < target_pcm) {
+      target_pcm = sink.pcm;
+      have_target = true;
+    }
+  }
+
+  PTPStatus ptp;
+  session_manager_->get_ptp_status(ptp);
+  bool ptp_locked = (ptp.status == "locked");
+
+  if (!have_target || !ptp_locked) {
+    stop_capture();
+    return;
+  }
+
+  if (!running_ || target_pcm != active_capture_pcm_) {
+    stop_capture();
+    start_capture(target_pcm);
+  }
 }
 
 #ifndef timersub
@@ -188,18 +224,60 @@ ssize_t Streamer::pcm_read(uint8_t* data, size_t rcount) {
   return rcount;
 }
 
-bool Streamer::start_capture() {
+bool Streamer::start_capture(uint8_t pcm_id) {
   if (running_)
     return true;
 
-  BOOST_LOG_TRIVIAL(info) << "Streamer: starting audio capture ... ";
+  /* resolve the target PCM in the runtime topology -> card name, ALSA device
+   * index, rate and capture channel count. The single capture context follows
+   * THIS pcm only (one at a time). */
+  Pcm target;
+  bool found = false;
+  for (const auto& pcm : session_manager_->get_pcms()) {
+    if (pcm.pcm_id == pcm_id) {
+      target = pcm;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    BOOST_LOG_TRIVIAL(warning)
+        << "streamer:: no live PCM with id " << std::to_string(pcm_id)
+        << ", not capturing";
+    return false;
+  }
+
+  int device_index = session_manager_->device_index_of(pcm_id);
+  if (device_index < 0) {
+    BOOST_LOG_TRIVIAL(warning)
+        << "streamer:: cannot resolve ALSA device index for PCM "
+        << std::to_string(pcm_id) << ", not capturing";
+    return false;
+  }
+  std::string device_name = "plughw:" + target.card + "," +
+                            std::to_string(device_index);
+
+  BOOST_LOG_TRIVIAL(info) << "Streamer: starting audio capture on "
+                          << device_name << " (PCM "
+                          << std::to_string(pcm_id) << ") ... ";
   int err;
-  if ((err = snd_pcm_open(&capture_handle_, device_name, SND_PCM_STREAM_CAPTURE,
-                          SND_PCM_NONBLOCK)) < 0) {
+  if ((err = snd_pcm_open(&capture_handle_, device_name.c_str(),
+                          SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK)) < 0) {
+    if (err == -EBUSY) {
+      /* the PCM's single capture substream is held by another consumer (e.g.
+       * CamillaDSP). Not fatal -- flag it and retry on the next reconcile. */
+      BOOST_LOG_TRIVIAL(warning)
+          << "streamer:: capture device " << device_name
+          << " is busy (held by another consumer), will retry";
+      capture_busy_ = true;
+      return false;
+    }
     BOOST_LOG_TRIVIAL(fatal) << "streamer:: cannot open audio device "
                              << device_name << " : " << snd_strerror(err);
     return false;
   }
+  capture_busy_ = false;
+  active_capture_pcm_ = pcm_id;
 
   snd_pcm_hw_params_t* hw_params;
   if ((err = snd_pcm_hw_params_malloc(&hw_params)) < 0) {
@@ -230,9 +308,9 @@ bool Streamer::start_capture() {
     return false;
   }
 
-  /* the streamer captures the primary PCM (plughw:RAVENNA, device 0); its rate
-   * is that PCM's rate. There is no daemon-wide sample-rate default anymore. */
-  rate_ = config_->rate_for_group(0);
+  /* the streamer follows the streamed sink's PCM: its rate and capture channel
+   * count come from that PCM (no daemon-wide default, no global channel count). */
+  rate_ = target.sample_rate;
   if ((err = snd_pcm_hw_params_set_rate_near(capture_handle_, hw_params, &rate_,
                                              0)) < 0) {
     BOOST_LOG_TRIVIAL(fatal)
@@ -240,7 +318,7 @@ bool Streamer::start_capture() {
     return false;
   }
 
-  channels_ = config_->get_streamer_channels();
+  channels_ = target.num_inputs;
   if ((err = snd_pcm_hw_params_set_channels(capture_handle_, hw_params,
                                             channels_)) < 0) {
     BOOST_LOG_TRIVIAL(fatal)
@@ -322,7 +400,12 @@ bool Streamer::start_capture() {
 void Streamer::open_files(uint8_t files_id) {
   BOOST_LOG_TRIVIAL(debug) << "streamer: opening files with id "
                            << std::to_string(files_id) << " ...";
+  /* lean streamer: only the streamed sinks bound to the active capture PCM are
+   * encoded; the others are not captured here. */
   for (const auto& sink : session_manager_->get_sinks()) {
+    if (!sink.stream || sink.pcm != active_capture_pcm_) {
+      continue;
+    }
     tmp_streams_[sink.id].str("");
     std::unique_lock faac_lock(faac_mutex_[sink.id]);
     if (!faac_[sink.id]) {
@@ -335,6 +418,9 @@ void Streamer::save_files(uint8_t files_id) {
   auto sample_size = bytes_per_frame_ / channels_;
 
   for (const auto& sink : session_manager_->get_sinks()) {
+    if (!sink.stream || sink.pcm != active_capture_pcm_) {
+      continue;
+    }
     total_sink_samples_[sink.id] += chunk_samples_;
     for (size_t offset = 0; offset < chunk_samples_; offset++) {
       for (uint16_t ch : sink.map) {
@@ -358,7 +444,7 @@ bool Streamer::setup_codec(const StreamSink& sink) {
     return false;
   }
 
-  params.sample_rate = config_->rate_for_group(0);
+  params.sample_rate = rate_;
   params.num_channels = static_cast<uint32_t>(sink.map.size());
   params.object_type = FAAC_OBJ_LOW;
   params.mpeg_version = FAAC_MPEG4;
@@ -399,7 +485,7 @@ bool Streamer::setup_codec(const StreamSink& sink) {
 #else
   unsigned long input_samples = 0;
   unsigned long max_output_bytes = 0;
-  auto enc = faacEncOpen(config_->rate_for_group(0), sink.map.size(),
+  auto enc = faacEncOpen(rate_, sink.map.size(),
                          &input_samples, &max_output_bytes);
   if (!enc) {
     BOOST_LOG_TRIVIAL(fatal) << "streamer:: cannot open legacy codec";
@@ -449,6 +535,9 @@ void Streamer::close_files(uint8_t files_id) {
 
   std::list<std::future<bool> > ress;
   for (const auto& sink : session_manager_->get_sinks()) {
+    if (!sink.stream || sink.pcm != active_capture_pcm_) {
+      continue;
+    }
     ress.emplace_back(std::async(std::launch::async, [=]() {
       uint32_t out_len = 0;
       {
@@ -562,8 +651,13 @@ bool Streamer::terminate() {
 }
 
 std::error_code Streamer::get_info(const StreamSink& sink, StreamerInfo& info) {
-  if (!running_) {
-    BOOST_LOG_TRIVIAL(warning) << "streamer:: not running";
+  if (!running_ || !sink_eligible(sink)) {
+    BOOST_LOG_TRIVIAL(warning)
+        << "streamer:: sink " << std::to_string(sink.id)
+        << " not being streamed (running=" << running_.load()
+        << " stream=" << sink.stream << " pcm=" << std::to_string(sink.pcm)
+        << " active_pcm=" << std::to_string(active_capture_pcm_)
+        << " busy=" << capture_busy_ << ")";
     return std::error_code{DaemonErrc::streamer_not_running};
   }
 
@@ -603,7 +697,7 @@ std::error_code Streamer::get_info(const StreamSink& sink, StreamerInfo& info) {
   info.files_num = files_num_;
   info.file_duration = file_duration_;
   info.player_buffer_files_num = player_buffer_files_num_;
-  info.rate = config_->rate_for_group(0);
+  info.rate = rate_;
   info.channels = sink.map.size();
   info.start_file_id = start_file_id;
   info.current_file_id = file_id;
@@ -619,8 +713,9 @@ std::error_code Streamer::get_stream(const StreamSink& sink,
                                      uint8_t& start_file_id,
                                      uint32_t& file_counter,
                                      std::string& out) {
-  if (!running_) {
-    BOOST_LOG_TRIVIAL(warning) << "streamer:: not running";
+  if (!running_ || !sink_eligible(sink)) {
+    BOOST_LOG_TRIVIAL(warning) << "streamer:: sink " << std::to_string(sink.id)
+                               << " not being streamed";
     return std::error_code{DaemonErrc::streamer_not_running};
   }
 
@@ -654,7 +749,7 @@ std::error_code Streamer::get_stream(const StreamSink& sink,
 std::error_code Streamer::live_stream_init(const StreamSink& sink,
                                            const std::string& ip,
                                            int port) {
-  if (!running_) {
+  if (!running_ || !sink_eligible(sink)) {
     return std::error_code{DaemonErrc::streamer_not_running};
   }
 

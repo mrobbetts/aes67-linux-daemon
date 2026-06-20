@@ -199,7 +199,6 @@ bool Config::save(const Config& config) {
         get_streamer_files_num() != config.get_streamer_files_num() ||
         get_streamer_player_buffer_files_num() !=
             config.get_streamer_player_buffer_files_num() ||
-        get_streamer_enabled() != config.get_streamer_enabled() ||
         get_nmos_enabled() != config.get_nmos_enabled() ||
         get_nmos_registry_address() != config.get_nmos_registry_address() ||
         get_nmos_registry_port() != config.get_nmos_registry_port() ||
@@ -222,13 +221,6 @@ std::string Config::get_node_id() const {
   } else {
     return custom_node_id_;
   }
-}
-
-bool Config::get_streamer_enabled() const {
-#ifndef _USE_STREAMER_
-  return false;
-#endif
-  return streamer_enabled_;
 }
 
 bool Config::get_mdns_enabled() const {

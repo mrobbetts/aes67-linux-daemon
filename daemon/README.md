@@ -217,7 +217,6 @@ Example
       "custom_node_id": "",
       "ptp_status_script": "./scripts/ptp_status.sh",
       "auto_sinks_update": true,
-      "streamer_enabled": false,
       "streamer_channels": 8,
       "streamer_files_num": 6,
       "streamer_file_duration": 1,
@@ -332,9 +331,7 @@ where:
 > JSON string specifying the path to the script executed in background when the PTP slave clock status changes.
 > The PTP clock status is passed as first parameter to the script and it can be *unlocked*, *locking* or *locked*.
 
-> **streamer\_enabled**
-> JSON boolean specifying whether the HTTP Streamer is enabled or disabled.
-> Once activated, the HTTP Streamer starts capturing samples for number of channels specified by *streamer_channels* starting from channel 0, then it splits them into *streamer_files_num* files of a *streamer_file_duration* duration for each configured Sink and it serves them via HTTP.
+> The HTTP Streamer is enabled per-Sink via the Sink's *stream* boolean flag (there is no daemon-wide enable toggle). The streamer captures the PCM of the lowest-id streamed Sink (one capture context at a time), splits it into *streamer_files_num* files of *streamer_file_duration* each, and serves them via HTTP. The captured rate and channel count follow that Sink's PCM.
 
 > **streamer\_channels**
 > JSON number specifying the number of channels captured by the HTTP Streamer starting from channel 0, 8 by default.

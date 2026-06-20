@@ -224,6 +224,7 @@ class Sinks extends Component {
       'source': RestAPI.getBaseUrl() + '/api/source/sdp/' + id,
       'sdp': '',
       'ignore_refclk_gmid': true,
+      'stream': false,
       'map': [ (id * 2) % 64, (id * 2 + 1) % 64 ]
     };
     this.openEdit('Add Sink ' + id, defaultSink, false);

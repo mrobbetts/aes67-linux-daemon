@@ -78,7 +78,6 @@ class Streamer {
       : session_manager_(session_manager), config_(config){};
 
  private:
-  constexpr static const char device_name[] = "plughw:RAVENNA";
   constexpr static snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 
   bool pcm_xrun();
@@ -88,8 +87,17 @@ class Streamer {
   bool on_ptp_status_change(const std::string& status);
   bool on_sink_add(uint8_t id);
   bool on_sink_remove(uint8_t id);
-  bool start_capture();
+  /* lean streamer: pick the capture target (lowest pcm among streamed sinks)
+   * and (re)start/stop the single capture context to follow it. */
+  void reconcile_capture();
+  bool start_capture(uint8_t pcm_id);
   bool stop_capture();
+  /* a sink is served only while it is flagged for streaming, bound to the PCM
+   * the single capture context currently follows, and that device is not held by
+   * another consumer. */
+  bool sink_eligible(const StreamSink& sink) const {
+    return sink.stream && sink.pcm == active_capture_pcm_ && !capture_busy_;
+  }
   bool setup_codec(const StreamSink& sink);
   void open_files(uint8_t files_id);
   void close_files(uint8_t files_id);
@@ -116,6 +124,11 @@ class Streamer {
   std::unordered_map<uint8_t, uint32_t> out_buffer_size_{0};
   uint8_t channels_{8};
   uint32_t rate_{0};
+  /* lean streamer: the pcm_id of the PCM the single capture context currently
+   * follows, and whether the last open failed because the device is held by
+   * another consumer (e.g. CamillaDSP). Retried on the next reconcile. */
+  uint8_t active_capture_pcm_{0};
+  bool capture_busy_{false};
   std::future<bool> res_;
   snd_pcm_t* capture_handle_;
   std::atomic_bool running_{false};

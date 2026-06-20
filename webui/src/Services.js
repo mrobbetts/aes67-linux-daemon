@@ -90,7 +90,7 @@ export default class RestAPI {
     });
   }
 
-  static setConfig(log_severity, syslog_proto, syslog_server, rtp_mcast_base, rtp_mcast_base_sec, rtp_port, rtp_port_sec, rtsp_port, tic_frame_size_at_1fs, max_tic_frame_size, sap_mcast_addr, sap_interval, mdns_enabled, custom_node_id, auto_sinks_update, streamer_enabled, streamer_channels, streamer_files_num, streamer_file_duration, streamer_player_buffer_files_num, nmos_enabled, nmos_registry_address, nmos_registry_port, nmos_node_port) {
+  static setConfig(log_severity, syslog_proto, syslog_server, rtp_mcast_base, rtp_mcast_base_sec, rtp_port, rtp_port_sec, rtsp_port, tic_frame_size_at_1fs, max_tic_frame_size, sap_mcast_addr, sap_interval, mdns_enabled, custom_node_id, auto_sinks_update, streamer_channels, streamer_files_num, streamer_file_duration, streamer_player_buffer_files_num, nmos_enabled, nmos_registry_address, nmos_registry_port, nmos_node_port) {
     return this.doFetch(config, {
       body: JSON.stringify({
         log_severity: parseInt(log_severity, 10),
@@ -108,7 +108,6 @@ export default class RestAPI {
         custom_node_id: custom_node_id,
         mdns_enabled: mdns_enabled,
         auto_sinks_update: auto_sinks_update,
-        streamer_enabled: streamer_enabled,
         streamer_channels: parseInt(streamer_channels, 10),
         streamer_files_num: parseInt(streamer_files_num, 10),
         streamer_file_duration: parseInt(streamer_file_duration, 10),
@@ -195,7 +194,7 @@ export default class RestAPI {
     });
   }
 
-  static addSink(id, name, io, delay, use_sdp, source, sdp, ignore_refclk_gmid, map, pcm, is_edit) {
+  static addSink(id, name, io, delay, use_sdp, source, sdp, ignore_refclk_gmid, map, pcm, stream, is_edit) {
     return this.doFetch(sink + '/' + id, {
       body: JSON.stringify({
         name: name,
@@ -206,7 +205,8 @@ export default class RestAPI {
         sdp: sdp,
         ignore_refclk_gmid: ignore_refclk_gmid,
         map: map,
-        pcm: parseInt(pcm, 10)
+        pcm: parseInt(pcm, 10),
+        stream: stream
       }),
       method: 'PUT'
     }).catch(err => {
