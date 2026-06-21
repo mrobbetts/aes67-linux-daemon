@@ -62,6 +62,15 @@ class Browser : public MDNSClient {
 
   bool init() override;
   bool terminate() override;
+  /* teardown safety: if an exception unwinds main before terminate() runs, the
+   * implicit dtor would join the still-running worker -> hang -> watchdog. Stop
+   * the worker first, then join. Idempotent with terminate() (res_ is invalid
+   * after a prior get()). */
+  ~Browser() {
+    running_ = false;
+    if (res_.valid())
+      res_.wait();
+  }
   uint32_t get_last_update_ts() const { return last_update_; }
 
   std::list<RemoteSource> get_remote_sources(

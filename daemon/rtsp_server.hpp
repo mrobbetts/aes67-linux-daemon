@@ -122,6 +122,14 @@ class RtspServer {
     res_.get();
     return true;
   }
+  /* teardown safety: if an exception unwinds main before terminate() runs, the
+   * implicit dtor would join the still-running io_service thread -> hang ->
+   * watchdog. Stop it first, then join. Idempotent with terminate(). */
+  ~RtspServer() {
+    io_service_.stop();
+    if (res_.valid())
+      res_.wait();
+  }
 
  private:
   /* a source was updated */

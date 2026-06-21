@@ -59,6 +59,11 @@ class Streamer {
 
   bool init();
   bool terminate();
+  /* teardown safety: reconcile_thread_ is a joinable std::thread -- if an
+   * exception unwinds main before terminate() runs, destroying it joinable
+   * calls std::terminate(). terminate() (idempotent) stops+joins it and the
+   * capture thread; run it from the dtor too. */
+  ~Streamer() { terminate(); }
 
   std::error_code get_info(const StreamSink& sink, StreamerInfo& info);
   std::error_code get_stream(const StreamSink& sink,
