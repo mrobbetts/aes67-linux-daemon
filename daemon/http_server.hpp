@@ -47,6 +47,16 @@ class HttpServer {
         config_(config){};
   bool init();
   bool terminate();
+  /* teardown safety: if an exception unwinds main before terminate() runs, the
+   * implicit dtor would join the still-running listen thread (stuck in
+   * accept()) -> hang -> watchdog. Stop the server first, then join. Idempotent
+   * with terminate() (svr_.stop() is safe to repeat; res_ is invalid after a
+   * prior get()). */
+  ~HttpServer() {
+    svr_.stop();
+    if (res_.valid())
+      res_.wait();
+  }
 
  private:
   std::shared_ptr<SessionManager> session_manager_;

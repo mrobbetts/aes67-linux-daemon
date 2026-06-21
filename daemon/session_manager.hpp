@@ -168,7 +168,15 @@ class SessionManager {
   SessionManager() = delete;
   SessionManager(const SessionManager&) = delete;
   SessionManager& operator=(const SessionManager&) = delete;
-  virtual ~SessionManager() = default;
+  /* teardown safety: the worker thread (res_) loops on running_; if an
+   * exception unwinds main before terminate() runs, the implicit dtor would
+   * join a still-looping worker -> hang -> watchdog. Stop it first, then join
+   * (while running_/res_ are still alive). Idempotent with terminate(). */
+  virtual ~SessionManager() {
+    running_ = false;
+    if (res_.valid())
+      res_.wait();
+  }
 
   // session manager interface
   bool init() {
