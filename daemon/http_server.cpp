@@ -117,16 +117,6 @@ bool HttpServer::init() {
     try {
       Config config = json_to_config(req.body, *config_);
 
-      /* W7 (Decision 10): reject an invalid device-group set at the REST
-       * boundary (HTTP 400) — the same check Config::parse runs on file load.
-       * Without this a bad set is saved and bricks the daemon on the restart
-       * the save itself triggers. */
-      std::string dg_err = validate_device_groups(config.get_device_groups());
-      if (!dg_err.empty()) {
-        set_error(400, dg_err, res);
-        return;
-      }
-
       if (config_->get_syslog_proto() != config.get_syslog_proto() ||
           config_->get_syslog_server() != config.get_syslog_server() ||
           config_->get_log_severity() != config.get_log_severity()) {

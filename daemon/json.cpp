@@ -126,29 +126,7 @@ std::string config_to_json(const Config& config) {
      << ",\n  \"nmos_registry_port\": " << config.get_nmos_registry_port()
      << ",\n  \"nmos_node_port\": " << config.get_nmos_node_port()
      << ",\n  \"nmos_label\": \"" << escape_json(config.get_nmos_label()) << "\""
-     << ",\n  \"device_groups\": [";
-  {
-    const auto& groups = config.get_device_groups();
-    bool first = true;
-    for (const auto& g : groups) {
-      if (!first)
-        ss << ",";
-      first = false;
-      ss << "\n    {"
-         << "\n      \"id\": " << unsigned(g.id)
-         << ",\n      \"num_inputs\": " << g.num_inputs
-         << ",\n      \"num_outputs\": " << g.num_outputs
-         << ",\n      \"playout_delay\": " << g.playout_delay
-         << ",\n      \"capture_delay\": " << g.capture_delay
-         << ",\n      \"sample_rate\": " << g.sample_rate
-         << ",\n      \"domain\": " << unsigned(g.domain)
-         << ",\n      \"name\": \"" << escape_json(g.name) << "\""
-         << "\n    }";
-    }
-    if (!groups.empty())
-      ss << "\n  ";
-  }
-  ss << "]\n}\n";
+     << "\n}\n";
   return ss.str();
 }
 
@@ -552,29 +530,6 @@ Config json_to_config_(std::istream& js, Config& config) {
       } else if (key == "nmos_label") {
         config.set_nmos_label(
             remove_undesired_chars(val.get_value<std::string>()));
-      } else if (key == "device_groups") {
-        /* multi-rate Stage 1: optional array of PCM device groups.
-         * Each entry: {id, num_inputs, num_outputs, playout_delay?,
-         * capture_delay?}. Group 0 is the default PCM created at probe;
-         * groups 1..N-1 are added via MT_ALSA_Msg_AddPCM at daemon init. */
-        std::vector<DeviceGroup> groups;
-        for (auto const& [k, gval] : val) {
-          (void)k;  // array elements have empty keys
-          DeviceGroup g;
-          g.id = gval.get<uint8_t>("id");
-          g.num_inputs = gval.get<uint32_t>("num_inputs", 0);
-          g.num_outputs = gval.get<uint32_t>("num_outputs", 0);
-          g.playout_delay = gval.get<int32_t>("playout_delay", 0);
-          g.capture_delay = gval.get<int32_t>("capture_delay", 0);
-          /* W7: per-group rate (0 ⇒ inherit daemon-wide default),
-           * planted domain, and ALSA device name — all optional, so
-           * pre-W7 configs parse unchanged (Decision 10). */
-          g.sample_rate = gval.get<uint32_t>("sample_rate", 0);
-          g.domain = gval.get<uint8_t>("domain", 0);
-          g.name = gval.get<std::string>("name", "");
-          groups.push_back(g);
-        }
-        config.set_device_groups(std::move(groups));
       } else if (key == "ip_addr") {
         config.set_ip_addr_str(val.get_value<std::string>());
       } else if (key == "mac_addr" || key == "node_id") {

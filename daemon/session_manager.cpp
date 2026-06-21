@@ -1057,32 +1057,6 @@ uint8_t SessionManager::domain_for_pcm_(uint8_t pcm_id) const {
   return config_->get_ptp_domain();
 }
 
-void SessionManager::seed_topology_from_config_(std::list<Card>& cards,
-                                                std::list<Pcm>& pcms) const {
-  /* First-boot / no-persisted-topology fallback: one card + one "default" pcm
-   * per configured device group (handle = group enumeration order, pcm_id =
-   * group id) so any pre-existing status.json streams keep their pcm FK valid. */
-  uint8_t handle = 0;
-  for (const auto& g : config_->get_device_groups()) {
-    Card card;
-    card.handle = handle++;
-    card.name = g.name;
-    card.domain = g.domain;
-    cards.push_back(card);
-
-    Pcm pcm;
-    pcm.pcm_id = g.id;
-    pcm.card = g.name;
-    pcm.name = "default";
-    pcm.sample_rate = config_->rate_for_group(g.id);
-    pcm.num_inputs = g.num_inputs;
-    pcm.num_outputs = g.num_outputs;
-    pcm.playout_delay = g.playout_delay;
-    pcm.capture_delay = g.capture_delay;
-    pcms.push_back(pcm);
-  }
-}
-
 bool SessionManager::load_status() {
   std::list<Card> cards_list;
   std::list<Pcm> pcms_list;
@@ -1110,20 +1084,11 @@ bool SessionManager::load_status() {
     }
   }
 
-  /* W10.2: the SessionManager owns the card+pcm topology now (DriverManager::init
-   * no longer creates them). Bring up the persisted set, or seed card+pcm per
-   * device group on first boot. Cards must come up BEFORE sources/sinks, which
-   * reference their pcms by pcm_id. A card with no pcms is brought up empty.
-   *
-   * Re-seed from config when there are NO pcms at all -- covers first boot AND
-   * migration from a pre-pcm-split status.json (which has cards but no "pcms",
-   * so their rate/channels live only in config). A live config always has >=1
-   * device group, so this can't strand a real setup; the degenerate
-   * all-empty-cards state is rebuilt from config rather than left pcm-less. */
-  if (pcms_list.empty()) {
-    cards_list.clear();
-    seed_topology_from_config_(cards_list, pcms_list);
-  }
+  /* W10.2: the SessionManager owns the card+pcm topology, brought up from
+   * status.json. Cards must come up BEFORE sources/sinks, which reference their
+   * pcms by pcm_id. A card with no pcms is brought up empty. First boot (no
+   * status.json) simply has no cards — create them at runtime via REST/WebUI;
+   * there is no daemon.conf seeding anymore. */
   {
     std::unique_lock cards_lock(cards_mutex_);
     for (const auto& card : cards_list) {
@@ -2208,11 +2173,8 @@ void SessionManager::on_update_sources() {
 }
 
 void SessionManager::on_ptp_status_changed(const std::string& status) const {
-  if (status == "locked") {
-    // set sample rate, this may require seconds
-    (void)driver_->set_sample_rate(driver_->get_current_sample_rate());
-  }
-
+  /* W14: no manager-wide rate to (re)set on lock -- each PCM self-rates via
+   * AddPCM; the kernel has no chip-0 reference rate anymore. */
   for (const auto& cb : ptp_status_observers_) {
     (void)cb(status);
   }
@@ -2268,7 +2230,6 @@ bool SessionManager::worker() {
   auto ptp_timepoint = steady_clock::now();
   int sap_interval = 1;
   int ptp_interval = 0;
-  uint32_t sample_rate = driver_->get_current_sample_rate();
 
   sap_.set_multicast_interface(config_->get_ip_addr_str());
 
@@ -2347,13 +2308,10 @@ bool SessionManager::worker() {
               << "session_manager:: new PTP clock status " << status_changed_to;
           on_ptp_status_changed(status_changed_to);
         }
-        if (gmid_changed ||
-            sample_rate != driver_->get_current_sample_rate()) {
-          // a grandmaster id changed or the sample rate changed: re-advertise.
-          if (sample_rate != driver_->get_current_sample_rate()) {
-            sample_rate = driver_->get_current_sample_rate();
-            (void)driver_->set_sample_rate(sample_rate);
-          }
+        if (gmid_changed) {
+          // a grandmaster id changed: re-advertise sources (the SDP refclk
+          // carries the gmid). W14: there is no manager-wide sample rate to
+          // track or re-apply here -- each PCM self-rates.
           on_update_sources();
         }
 

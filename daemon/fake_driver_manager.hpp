@@ -58,8 +58,6 @@ class DriverManager {
   std::error_code get_rtp_stream_status(uint64_t stream_handle,
                                         TRTP_stream_status& stream_status);
   std::error_code remove_rtp_stream(uint64_t stream_handle);
-  std::error_code get_sample_rate(uint32_t& sample_rate);
-  std::error_code set_sample_rate(uint32_t sample_rate);
   std::error_code set_tic_frame_size_at_1fs(uint64_t frame_size);
   std::error_code set_max_tic_frame_size(uint64_t frame_size);
   std::error_code set_playout_delay(uint8_t pcm_id, int32_t delay);
@@ -69,7 +67,6 @@ class DriverManager {
 
   int32_t get_current_output_volume() const { return output_volume_; };
   int32_t get_current_output_switch() const { return output_switch_; };
-  uint32_t get_current_sample_rate() const { return sample_rate_; };
 
  protected:
   // singleton, use create to build
@@ -86,7 +83,6 @@ class DriverManager {
 
   int32_t output_volume_{-20};
   int32_t output_switch_{0};
-  uint32_t sample_rate_{0};
   uint64_t frame_size_{0};
   uint64_t max_frame_size_{0};
   uint32_t delay_{0};
