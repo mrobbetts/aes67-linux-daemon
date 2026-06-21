@@ -35,6 +35,26 @@ std::shared_ptr<Streamer> Streamer::create(
 
 bool Streamer::init() {
   BOOST_LOG_TRIVIAL(info) << "Streamer: init";
+  running_ = false;
+
+  /* Start the deferred-reconcile thread BEFORE registering observers so no
+   * signal is lost. Observers (which fire under session_manager locks) only
+   * signal this thread; it reconciles in a clean context. */
+  reconcile_stop_ = false;
+  reconcile_pending_ = false;
+  reconcile_thread_ = std::thread([this] {
+    for (;;) {
+      std::unique_lock<std::mutex> lk(reconcile_mtx_);
+      reconcile_cv_.wait(
+          lk, [this] { return reconcile_pending_ || reconcile_stop_; });
+      if (reconcile_stop_)
+        return;
+      reconcile_pending_ = false;
+      lk.unlock();
+      reconcile_capture();
+    }
+  });
+
   session_manager_->add_ptp_status_observer(
       std::bind(&Streamer::on_ptp_status_change, this, std::placeholders::_1));
   session_manager_->add_sink_observer(
@@ -44,19 +64,28 @@ bool Streamer::init() {
       SessionManager::SinkObserverType::remove_sink,
       std::bind(&Streamer::on_sink_remove, this, std::placeholders::_1));
 
-  running_ = false;
-
-  PTPStatus status;
-  session_manager_->get_ptp_status(status);
-  on_ptp_status_change(status.status);
+  /* reconcile to whatever topology / PTP state already exists. */
+  request_reconcile();
 
   return true;
 }
 
+/* signal the reconcile thread. Lock-safe: callable from an observer that holds
+ * a session_manager lock (it only touches reconcile_mtx_, never session state). */
+void Streamer::request_reconcile() {
+  {
+    std::lock_guard<std::mutex> lk(reconcile_mtx_);
+    reconcile_pending_ = true;
+  }
+  reconcile_cv_.notify_one();
+}
+
 bool Streamer::on_sink_add(uint8_t id) {
   /* a sink (re)appeared -- it may be a streamed sink, or a PUT that toggled the
-   * stream flag (the REST update path fires remove+add). Re-pick the target. */
-  reconcile_capture();
+   * stream flag (the REST update path fires remove+add). Re-pick the target on
+   * the reconcile thread (this observer runs under session_manager's
+   * sinks_mutex_, so it must NOT call get_sinks() here). */
+  request_reconcile();
   return true;
 }
 
@@ -67,18 +96,16 @@ bool Streamer::on_sink_remove(uint8_t id) {
     faac_[id] = 0;
   }
   total_sink_samples_[id] = 0;
-  /* the removed sink may have been the capture target -- re-pick. */
-  reconcile_capture();
+  /* the removed sink may have been the capture target -- re-pick (deferred). */
+  request_reconcile();
   return true;
 }
 
 bool Streamer::on_ptp_status_change(const std::string& status) {
   BOOST_LOG_TRIVIAL(info) << "Streamer: new ptp status " << status;
-  if (status == "locked") {
-    reconcile_capture();
-  } else if (status == "unlocked") {
-    stop_capture();
-  }
+  /* reconcile_capture() re-reads the PTP status itself and starts/stops
+   * accordingly; just signal it (deferred, off this observer's thread). */
+  request_reconcile();
   return true;
 }
 
@@ -560,6 +587,14 @@ bool Streamer::stop_capture() {
 
 bool Streamer::terminate() {
   BOOST_LOG_TRIVIAL(info) << "streamer: terminating ... ";
+  /* stop the reconcile thread first so no reconcile races the teardown. */
+  {
+    std::lock_guard<std::mutex> lk(reconcile_mtx_);
+    reconcile_stop_ = true;
+  }
+  reconcile_cv_.notify_one();
+  if (reconcile_thread_.joinable())
+    reconcile_thread_.join();
   return stop_capture();
 }
 

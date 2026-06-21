@@ -19,8 +19,11 @@
 #define _STREAMER_HPP_
 
 #include <cstdlib>
+#include <condition_variable>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include <alsa/asoundlib.h>
 #include <faac.h>
@@ -88,8 +91,15 @@ class Streamer {
   bool on_sink_add(uint8_t id);
   bool on_sink_remove(uint8_t id);
   /* lean streamer: pick the capture target (lowest pcm among streamed sinks)
-   * and (re)start/stop the single capture context to follow it. */
+   * and (re)start/stop the single capture context to follow it. reconcile_capture
+   * calls back into session_manager (get_sinks/get_ptp_status), so it must run
+   * ONLY on reconcile_thread_ -- the sink/PTP observers fire under
+   * session_manager's locks, and re-entering them on that thread deadlocks
+   * (glibc EDEADLK -> std::shared_lock throws). The observers therefore only
+   * request_reconcile() (signal), and this thread does the work in a clean
+   * context once the change is committed. */
   void reconcile_capture();
+  void request_reconcile();
   bool start_capture(uint8_t pcm_id);
   bool stop_capture();
   /* a sink is served only while it is flagged for streaming, bound to the PCM
@@ -129,6 +139,12 @@ class Streamer {
    * another consumer (e.g. CamillaDSP). Retried on the next reconcile. */
   uint8_t active_capture_pcm_{0};
   bool capture_busy_{false};
+  /* deferred-reconcile thread + its signalling (see reconcile_capture above). */
+  std::thread reconcile_thread_;
+  std::mutex reconcile_mtx_;
+  std::condition_variable reconcile_cv_;
+  bool reconcile_pending_{false};
+  bool reconcile_stop_{false};
   std::future<bool> res_;
   snd_pcm_t* capture_handle_;
   std::atomic_bool running_{false};
