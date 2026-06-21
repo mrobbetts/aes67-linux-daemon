@@ -80,21 +80,8 @@ std::shared_ptr<Config> Config::parse(const std::string& filename,
       config.streamer_player_buffer_files_num_ > 2)
     config.streamer_player_buffer_files_num_ = 1;
 
-  /* No top-level-field synthesis: device groups are declared explicitly, each
-   * with its own required sample_rate (no daemon-wide default to synthesise
-   * from). A config with no device_groups comes up with no PCMs — add them at
-   * runtime via REST/WebUI. */
-
-  /* W7 (Decision 10): validate device-groups fail-loud before touching the
-   * driver. Shared with the POST /api/config REST path (config.hpp) so both
-   * entry points reject an invalid set identically. */
-  {
-    std::string dg_err = validate_device_groups(config.device_groups_);
-    if (!dg_err.empty()) {
-      std::cerr << dg_err << std::endl;
-      return nullptr;
-    }
-  }
+  /* Cards/PCMs are created at runtime via REST and persisted in status.json;
+   * daemon.conf no longer declares them. */
 
   boost::system::error_code ec;
 #if BOOST_VERSION < 108700
@@ -179,8 +166,7 @@ bool Config::save(const Config& config) {
     driver_restart_ =
         get_tic_frame_size_at_1fs() != config.get_tic_frame_size_at_1fs() ||
         get_max_tic_frame_size() != config.get_max_tic_frame_size() ||
-        get_interface_name() != config.get_interface_name() ||
-        get_device_groups() != config.get_device_groups();
+        get_interface_name() != config.get_interface_name();
 
     daemon_restart_ =
         driver_restart_ || get_http_port() != config.get_http_port() ||

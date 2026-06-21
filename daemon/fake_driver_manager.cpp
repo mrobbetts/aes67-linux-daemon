@@ -35,11 +35,7 @@ std::shared_ptr<DriverManager> DriverManager::create() {
 }
 
 bool DriverManager::init(const Config& config) {
-  /* W7: group 0's rate is the manager-wide rate (Decision 10) — mirror the
-   * real DriverManager, which uses rate_for_group(0), not the top-level
-   * default (they differ only when group 0 sets its own sample_rate). */
-  sample_rate_ = config.rate_for_group(0);
-
+  /* W14: no manager-wide sample rate; every PCM self-rates via add_pcm_to_card. */
   TPTPConfig ptp_config;
   ptp_config.ui8Domain = config.get_ptp_domain();
   ptp_config.ui8DSCP = config.get_ptp_dscp();
@@ -201,15 +197,6 @@ std::error_code DriverManager::ping() {
   return std::error_code{};
 }
 
-std::error_code DriverManager::set_sample_rate(uint32_t sample_rate) {
-  sample_rate_ = sample_rate;
-  /* W7: log it so group 0's rate is visible in FAKE_DRIVER test output
-   * (the real driver's SetSampleRate is visible kernel-side). */
-  BOOST_LOG_TRIVIAL(info) << "fake_driver_manager:: set sample rate "
-                          << sample_rate;
-  return std::error_code{};
-}
-
 std::error_code DriverManager::set_tic_frame_size_at_1fs(uint64_t frame_size) {
   frame_size_ = frame_size;
   return std::error_code{};
@@ -231,12 +218,6 @@ std::error_code DriverManager::set_capture_delay(uint8_t /*pcm_id*/,
   return std::error_code{};
 }
 
-std::error_code DriverManager::get_sample_rate(uint32_t& sample_rate) {
-  sample_rate = sample_rate_;
-  BOOST_LOG_TRIVIAL(info) << "fake_driver_manager:: sample rate "
-                          << sample_rate;
-  return std::error_code{};
-}
 
 std::error_code DriverManager::get_number_of_inputs(uint8_t /*pcm_id*/,
                                                     int32_t& inputs) {

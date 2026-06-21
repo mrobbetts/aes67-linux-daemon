@@ -315,8 +315,8 @@ class SessionManager {
    * using the handles/pcm_ids as given (caller holds cards_mutex_; inserts into
    * cards_/pcms_ on success). recreate_card_ rebuilds a card to match a new pcm
    * set and re-establishes its bound streams (the generic engine behind
-   * add_pcm/remove_pcm/update_pcm). seed_topology_from_config_ builds the
-   * first-boot card+pcm set. pcms_of_card_ lists a card's pcms (by pcm_id). */
+   * add_pcm/remove_pcm/update_pcm). pcms_of_card_ lists a card's pcms (by
+   * pcm_id). */
   int alloc_card_handle_() const;
   int alloc_pcm_id_() const;
   std::error_code bring_up_card_(const Card& card, const std::list<Pcm>& pcms);
@@ -324,8 +324,6 @@ class SessionManager {
                                  const std::list<Pcm>& new_pcms,
                                  const std::string& new_name = "",
                                  int new_domain = -1);
-  void seed_topology_from_config_(std::list<Card>& cards,
-                                  std::list<Pcm>& pcms) const;
   std::list<Pcm> pcms_of_card_(const std::string& card_name) const;
   /* pcm resolution against the runtime pcm set (pcms_ is authoritative now —
    * NOT daemon.conf device_groups, which is only the first-boot seed). All take

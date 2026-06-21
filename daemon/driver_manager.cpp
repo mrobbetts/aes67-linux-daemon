@@ -81,12 +81,6 @@ bool DriverManager::init(const Config& config) {
     return false;
   }
 
-  /* W7: get_current_sample_rate() reflects the manager-wide rate, which
-   * the kernel keeps equal to chip 0 / group 0's rate. Per-group rates
-   * for groups 1+ are resolved via Config::rate_for_group at each use
-   * site (sources, AddPCM); this stays the group-0 / default rate. */
-  sample_rate_ = config.rate_for_group(0);
-
   TPTPConfig ptp_config;
   ptp_config.ui8Domain = config.get_ptp_domain();
   ptp_config.ui8DSCP = config.get_ptp_dscp();
@@ -96,25 +90,17 @@ bool DriverManager::init(const Config& config) {
 
   bool res(false);
   if (config.get_driver_restart()) {
-    /* W10 multi-card: the manager-wide setup (clock-domain config, TIC frame
-     * sizing) still applies, but the per-PCM rate no longer goes through the
-     * manager-wide SetSampleRate. That call existed only to rate the
-     * probe-created chip 0; with no probe card, every PCM — group 0 included —
-     * gets its rate via add_pcm_to_card below, and calling SetSampleRate here
-     * (with no chips yet) would needlessly enter the kernel's PTP-relock wait.
-     * m_SampleRate stays at its kernel default (Layer 3 retires it). */
+    /* W14: only the genuinely manager-wide setup (clock-domain config, TIC
+     * frame sizing) goes through init now. There is no manager-wide sample
+     * rate: every PCM self-rates via add_pcm_to_card (the daemon always sends
+     * an explicit rate). */
     res = start() || reset(-1 /* all PCMs: clean slate */) ||
           set_interface_name(config.get_interface_name()) ||
           set_ptp_config(ptp_config) ||
           set_tic_frame_size_at_1fs(config.get_tic_frame_size_at_1fs()) ||
           set_max_tic_frame_size(config.get_max_tic_frame_size());
-    /* W10.2: card creation moved out of init() and into the SessionManager,
-     * which now owns the runtime card set (seeded from device_groups on first
-     * boot, otherwise rehydrated from status.json). init() keeps only the
-     * manager-wide driver setup above; SessionManager::load_status brings the
-     * cards up (add_card -> add_pcm_to_card -> register_card) after the driver
-     * is started, and applies the shared group-0 playout_delay there (when
-     * chip 0 actually exists). */
+    /* W10.2: the SessionManager owns the runtime card set (rehydrated from
+     * status.json); init() keeps only the manager-wide driver setup above. */
   }
 
   return !res;
@@ -348,12 +334,6 @@ std::error_code DriverManager::ping() {
   return retcode_;
 }
 
-std::error_code DriverManager::set_sample_rate(uint32_t sample_rate) {
-  this->send_command(MT_ALSA_Msg_SetSampleRate, sizeof(uint32_t),
-                     reinterpret_cast<const uint8_t*>(&sample_rate));
-  return retcode_;
-}
-
 std::error_code DriverManager::set_tic_frame_size_at_1fs(uint64_t frame_size) {
   this->send_command(MT_ALSA_Msg_SetTICFrameSizeAt1FS, sizeof(uint64_t),
                      reinterpret_cast<const uint8_t*>(&frame_size));
@@ -381,15 +361,6 @@ std::error_code DriverManager::set_capture_delay(uint8_t pcm_id, int32_t delay) 
   int32_t buf[2] = { pcm_id, delay };
   this->send_command(MT_ALSA_Msg_SetCaptureDelay, sizeof(buf),
                      reinterpret_cast<const uint8_t*>(buf));
-  return retcode_;
-}
-
-std::error_code DriverManager::get_sample_rate(uint32_t& sample_rate) {
-  this->send_command(MT_ALSA_Msg_GetSampleRate);
-  if (!retcode_) {
-    memcpy(&sample_rate, recv_data_, sizeof(uint32_t));
-    BOOST_LOG_TRIVIAL(info) << "driver_manager:: sample rate " << sample_rate;
-  }
   return retcode_;
 }
 
@@ -465,14 +436,6 @@ void DriverManager::on_event(enum MT_ALSA_msg_id id,
         BOOST_LOG_TRIVIAL(info)
             << "driver_manager:: event SetMasterOutputSwitch "
             << output_switch_;
-      }
-      resp_size = 0;
-      break;
-    case MT_ALSA_Msg_SetSampleRate:
-      if (req_size == sizeof(uint32_t)) {
-        memcpy(&sample_rate_, req, req_size);
-        BOOST_LOG_TRIVIAL(info)
-            << "driver_manager:: event SetSampleRate " << sample_rate_;
       }
       resp_size = 0;
       break;

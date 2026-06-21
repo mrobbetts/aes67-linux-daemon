@@ -25,47 +25,10 @@
 #include <string>
 #include <vector>
 
-/*
- * Multi-rate: a DeviceGroup describes one ALSA PCM device exposed by the
- * kernel module (hw:RAVENNA,id). PCM 0 is created at module probe; the
- * daemon issues MT_ALSA_Msg_AddPCM for any additional groups at startup.
- *
- * Every group declares its own REQUIRED sample_rate (and its own
- * playout/capture delay). There is no daemon-wide sample_rate/playout_delay
- * default to inherit — a group that omits sample_rate is rejected fail-loud
- * (validate_device_groups). Group 0 is parsed like any other group; no
- * user-visible group-0 precedence rule. The kernel asymmetry (chip 0 is
- * re-rated via the manager-wide SetSampleRate, groups 1+ via AddPCM) is
- * absorbed by the driver_manager translation, not exposed here. If
- * `device_groups` is absent, the daemon comes up with no PCMs (add them at
- * runtime via REST/WebUI) — no synthetic group is fabricated.
- *
- * domain is planted for W11 (multi-PTP-domain) and rejected-if-nonzero
- * until then, so configs written from W7 onward never need reformatting.
- * name becomes the ALSA device name (aplay -l) via AddPCM.
- */
-struct DeviceGroup {
-  uint8_t id{0};
-  uint32_t num_inputs{0};
-  uint32_t num_outputs{0};
-  int32_t playout_delay{0};
-  int32_t capture_delay{0};
-  uint32_t sample_rate{0};  // required per-group (no daemon-wide default)
-  uint8_t domain{0};        // planted for W11; rejected-if-nonzero until then
-  std::string name;         // ALSA device name; empty ⇒ kernel default
-
-  friend bool operator==(const DeviceGroup& a, const DeviceGroup& b) {
-    return a.id == b.id && a.num_inputs == b.num_inputs &&
-           a.num_outputs == b.num_outputs &&
-           a.playout_delay == b.playout_delay &&
-           a.capture_delay == b.capture_delay &&
-           a.sample_rate == b.sample_rate && a.domain == b.domain &&
-           a.name == b.name;
-  }
-  friend bool operator!=(const DeviceGroup& a, const DeviceGroup& b) {
-    return !(a == b);
-  }
-};
+/* Cards and PCMs are created exclusively at runtime via the REST interface and
+ * persisted in status.json. The former daemon.conf `device_groups` seeding (a
+ * one-time migration aid) has been removed: a daemon with no status.json comes
+ * up with no cards; add them via REST/WebUI. */
 
 /* W7: the supported PCM sample-rate set, mirroring the kernel's
  * is_valid_pcm_rate (ravenna-alsa-lkm/driver/manager.c). Kept in lockstep
@@ -86,48 +49,6 @@ inline bool is_valid_pcm_rate(uint32_t rate) {
     default:
       return false;
   }
-}
-
-/* W7: max device-group / PCM id, mirroring MR_ALSA_MAX_EXTRA_PCMS (15) in the
- * kernel and kMaxPcmId in driver_manager.cpp (same hand-kept-in-lockstep
- * caveat as is_valid_pcm_rate above). */
-inline constexpr uint8_t kMaxDeviceGroupId = 15;
-
-/* W7 (Decision 10): validate a device-group set fail-loud. Returns an empty
- * string when valid, else a human-readable reason. Shared by Config::parse
- * (file load) and the POST /api/config REST handler so an invalid set is
- * rejected identically on both — a bad set accepted live would persist and
- * brick the daemon on the restart the save triggers. */
-inline std::string validate_device_groups(
-    const std::vector<DeviceGroup>& groups) {
-  for (size_t i = 0; i < groups.size(); ++i) {
-    const auto& g = groups[i];
-    /* sample_rate is required per group — there is no daemon-wide default to
-     * fall back to (every PCM states its own rate, fail-loud if absent). */
-    if (g.sample_rate == 0)
-      return "device_group id=" + std::to_string(unsigned(g.id)) +
-             ": sample_rate is required (no daemon-wide default)";
-    if (!is_valid_pcm_rate(g.sample_rate))
-      return "device_group id=" + std::to_string(unsigned(g.id)) +
-             ": unsupported sample_rate " + std::to_string(g.sample_rate);
-    if (g.domain != 0)
-      return "device_group id=" + std::to_string(unsigned(g.id)) + ": domain " +
-             std::to_string(unsigned(g.domain)) +
-             " not supported yet (multi-PTP-domain is W11; only domain 0 is "
-             "allowed)";
-    if (g.id > kMaxDeviceGroupId)
-      return "device_group id=" + std::to_string(unsigned(g.id)) +
-             ": id exceeds maximum " + std::to_string(unsigned(kMaxDeviceGroupId));
-    for (size_t j = 0; j < i; ++j) {
-      if (groups[j].id == g.id)
-        return "device_group id=" + std::to_string(unsigned(g.id)) +
-               ": duplicate id";
-      if (!g.name.empty() && groups[j].name == g.name)
-        return "device_group id=" + std::to_string(unsigned(g.id)) +
-               ": duplicate name \"" + g.name + "\"";
-    }
-  }
-  return "";
 }
 
 class Config {
@@ -176,25 +97,6 @@ class Config {
   const std::string& get_custom_node_id() const { return custom_node_id_; };
   std::string get_node_id() const;
   bool get_auto_sinks_update() const { return auto_sinks_update_; };
-
-  /* The group's own (required, validated non-zero) sample rate. Returns 0 for
-   * an unknown id — there is no daemon-wide default to fall back to. Callers
-   * that key on a declared group/PCM (validation guarantees a real rate); the
-   * 0 return is the "no such group" sentinel (e.g. the streamer / chip-0
-   * reference when group 0 isn't declared). */
-  uint32_t rate_for_group(uint8_t pcm_id) const {
-    for (const auto& g : device_groups_) {
-      if (g.id == pcm_id)
-        return g.sample_rate;
-    }
-    return 0;
-  }
-  const std::vector<DeviceGroup>& get_device_groups() const {
-    return device_groups_;
-  };
-  void set_device_groups(std::vector<DeviceGroup> groups) {
-    device_groups_ = std::move(groups);
-  };
 
   /* attributes set during init */
   const std::array<uint8_t, 6>& get_mac_addr() const { return mac_addr_; };
@@ -314,8 +216,7 @@ class Config {
            lhs.get_interface_name() != rhs.get_interface_name() ||
            lhs.get_mdns_enabled() != rhs.get_mdns_enabled() ||
            lhs.get_auto_sinks_update() != rhs.get_auto_sinks_update() ||
-           lhs.get_custom_node_id() != rhs.get_custom_node_id() ||
-           lhs.get_device_groups() != rhs.get_device_groups();
+           lhs.get_custom_node_id() != rhs.get_custom_node_id();
   };
   friend bool operator==(const Config& lhs, const Config& rhs) {
     return !(lhs != rhs);
@@ -352,10 +253,6 @@ class Config {
   std::string custom_node_id_;
   std::string node_id_;
   bool auto_sinks_update_{true};
-  /* multi-rate Stage 1: optional list of PCM device groups. Synthesised
-   * with a single {id:0} entry if absent (legacy single-PCM behaviour). */
-  std::vector<DeviceGroup> device_groups_;
-
   /* set during init */
   std::array<uint8_t, 6> mac_addr_{0, 0, 0, 0, 0, 0};
   std::string mac_str_;
