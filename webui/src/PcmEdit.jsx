@@ -55,7 +55,8 @@ class PcmEdit extends Component {
       numInputs: this.props.pcm.num_inputs || 0,
       numOutputs: this.props.pcm.num_outputs || 0,
       playoutDelay: this.props.pcm.playout_delay || 0,
-      captureDelay: this.props.pcm.capture_delay || 0
+      captureDelay: this.props.pcm.capture_delay || 0,
+      rateFollowsSource: this.props.pcm.rate_follows_source || false
     };
     this.onSubmit = this.onSubmit.bind(this);
     this.onCancel = this.onCancel.bind(this);
@@ -74,11 +75,12 @@ class PcmEdit extends Component {
       // URL carries the current (old) name; the body carries the possibly-new one.
       RestAPI.updatePcm(this.props.cardName, this.props.pcm.name, this.state.name,
         this.state.sampleRate, this.state.numInputs, this.state.numOutputs,
-        this.state.playoutDelay, this.state.captureDelay).then(done);
+        this.state.playoutDelay, this.state.captureDelay,
+        this.state.rateFollowsSource).then(done);
     } else {
       RestAPI.addPcm(this.props.cardName, this.state.name, this.state.sampleRate,
         this.state.numInputs, this.state.numOutputs, this.state.playoutDelay,
-        this.state.captureDelay).then(done);
+        this.state.captureDelay, this.state.rateFollowsSource).then(done);
     }
   }
 
@@ -131,6 +133,12 @@ class PcmEdit extends Component {
               <th align='left'> <input type='number' min='0' max='64' className='input-number'
                 value={this.state.numOutputs}
                 onChange={e => this.setState({numOutputs: e.target.value})}/> </th>
+            </tr>
+            <tr>
+              <th align='left'> <label>Follow source sample rate</label> </th>
+              <th align='left'> <input type='checkbox'
+                checked={this.state.rateFollowsSource}
+                onChange={e => this.setState({rateFollowsSource: e.target.checked})}/> </th>
             </tr>
           </tbody></table>
           <br/>

@@ -103,13 +103,15 @@ struct Pcm {
   uint32_t num_outputs{0};
   int32_t playout_delay{0};
   int32_t capture_delay{0};
+  bool rate_follows_source{false};  // auto re-rate to match bound sink's source
 
   friend bool operator==(const Pcm& a, const Pcm& b) {
     return a.pcm_id == b.pcm_id && a.card == b.card && a.name == b.name &&
            a.sample_rate == b.sample_rate && a.num_inputs == b.num_inputs &&
            a.num_outputs == b.num_outputs &&
            a.playout_delay == b.playout_delay &&
-           a.capture_delay == b.capture_delay;
+           a.capture_delay == b.capture_delay &&
+           a.rate_follows_source == b.rate_follows_source;
   }
 };
 

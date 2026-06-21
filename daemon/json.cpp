@@ -201,7 +201,9 @@ std::string pcm_to_json(const Pcm& pcm, int device_index, bool include_card) {
      << ",\n    \"num_inputs\": " << pcm.num_inputs
      << ",\n    \"num_outputs\": " << pcm.num_outputs
      << ",\n    \"playout_delay\": " << pcm.playout_delay
-     << ",\n    \"capture_delay\": " << pcm.capture_delay;
+     << ",\n    \"capture_delay\": " << pcm.capture_delay
+     << ",\n    \"rate_follows_source\": " << std::boolalpha
+     << pcm.rate_follows_source;
   if (device_index >= 0) {
     ss << ",\n    \"device_index\": " << device_index;
   }
@@ -628,6 +630,7 @@ Pcm json_to_pcm(const std::string& json) {
     pcm.num_outputs = pt.get<uint32_t>("num_outputs", 0);
     pcm.playout_delay = pt.get<int32_t>("playout_delay", 0);
     pcm.capture_delay = pt.get<int32_t>("capture_delay", 0);
+    pcm.rate_follows_source = pt.get<bool>("rate_follows_source", false);
   } catch (boost::property_tree::json_parser::json_parser_error& je) {
     throw std::runtime_error("error parsing JSON at line " +
                              std::to_string(je.line()) + " :" + je.message());
@@ -782,6 +785,7 @@ static Pcm parse_one_pcm(const boost::property_tree::ptree& v,
   pcm.num_outputs = v.get<uint32_t>("num_outputs", 0);
   pcm.playout_delay = v.get<int32_t>("playout_delay", 0);
   pcm.capture_delay = v.get<int32_t>("capture_delay", 0);
+  pcm.rate_follows_source = v.get<bool>("rate_follows_source", false);
   return pcm;
 }
 

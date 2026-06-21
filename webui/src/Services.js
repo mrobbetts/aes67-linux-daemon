@@ -331,7 +331,7 @@ export default class RestAPI {
     });
   }
 
-  static addPcm(cardName, name, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay) {
+  static addPcm(cardName, name, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay, rate_follows_source) {
     return this.doFetch(card + '/' + encodeURIComponent(cardName) + pcm, {
       body: JSON.stringify({
         name: name,
@@ -339,7 +339,8 @@ export default class RestAPI {
         num_inputs: parseInt(num_inputs, 10),
         num_outputs: parseInt(num_outputs, 10),
         playout_delay: parseInt(playout_delay, 10),
-        capture_delay: parseInt(capture_delay, 10)
+        capture_delay: parseInt(capture_delay, 10),
+        rate_follows_source: rate_follows_source
       }),
       method: 'POST'
     }).catch(err => {
@@ -348,7 +349,7 @@ export default class RestAPI {
     });
   }
 
-  static updatePcm(cardName, pcmName, newName, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay) {
+  static updatePcm(cardName, pcmName, newName, sample_rate, num_inputs, num_outputs, playout_delay, capture_delay, rate_follows_source) {
     return this.doFetch(card + '/' + encodeURIComponent(cardName) + pcm + '/' + encodeURIComponent(pcmName), {
       body: JSON.stringify({
         name: newName,
@@ -356,7 +357,8 @@ export default class RestAPI {
         num_inputs: parseInt(num_inputs, 10),
         num_outputs: parseInt(num_outputs, 10),
         playout_delay: parseInt(playout_delay, 10),
-        capture_delay: parseInt(capture_delay, 10)
+        capture_delay: parseInt(capture_delay, 10),
+        rate_follows_source: rate_follows_source
       }),
       method: 'PUT'
     }).catch(err => {

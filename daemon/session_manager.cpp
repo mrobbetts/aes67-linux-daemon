@@ -877,6 +877,7 @@ std::error_code SessionManager::update_pcm(const std::string& card_name,
         updated.num_outputs = new_params.num_outputs;
         updated.playout_delay = new_params.playout_delay;
         updated.capture_delay = new_params.capture_delay;
+        updated.rate_follows_source = new_params.rate_follows_source;
         new_pcms.push_back(updated);
       } else {
         new_pcms.push_back(p);
@@ -2150,6 +2151,31 @@ void SessionManager::update_sinks() {
       std::list<RemoteSource> remote_sources = browser_->get_remote_sources();
       auto sinks_list = get_updated_sinks(remote_sources);
       for (auto& sink : sinks_list) {
+        // If the sink's pcm is flagged to follow its source rate, re-rate the
+        // pcm to the new source's rate BEFORE re-adding the sink, so the
+        // SDP-rate vs pcm-rate check in add_sink passes instead of rejecting.
+        Pcm pcm;
+        if (pcm_for_id_(sink.pcm, pcm) && pcm.rate_follows_source) {
+          StreamInfo info;
+          if (parse_sdp(sink.sdp, info)) {
+            uint32_t new_rate = info.stream[0].m_ui32SamplingRate;
+            if (new_rate != 0 && new_rate != pcm.sample_rate) {
+              BOOST_LOG_TRIVIAL(info)
+                  << "session_manager:: auto-follow: re-rating pcm \""
+                  << pcm.name << "\" (card \"" << pcm.card << "\") "
+                  << pcm.sample_rate << " -> " << new_rate
+                  << " to match source of sink " << std::to_string(sink.id);
+              Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
+              np.sample_rate = new_rate;
+              np.name = "";  // update_pcm: empty name => keep current name
+              if (auto ec = update_pcm(pcm.card, pcm.name, np)) {
+                BOOST_LOG_TRIVIAL(warning)
+                    << "session_manager:: auto-follow re-rate of pcm \""
+                    << pcm.name << "\" failed: " << ec.message();
+              }
+            }
+          }
+        }
         // Re-add sink with new SDP, since the sink.id is the same there will be
         // an update
         add_sink(sink);
