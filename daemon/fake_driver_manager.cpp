@@ -218,6 +218,12 @@ std::error_code DriverManager::set_capture_delay(uint8_t /*pcm_id*/,
   return std::error_code{};
 }
 
+std::error_code DriverManager::set_pcm_rate(uint8_t /*pcm_id*/,
+                                            uint32_t /*rate*/) {
+  /* W15: the fake driver has no open clients, so a re-rate always "applies". */
+  return std::error_code{};
+}
+
 
 std::error_code DriverManager::get_number_of_inputs(uint8_t /*pcm_id*/,
                                                     int32_t& inputs) {

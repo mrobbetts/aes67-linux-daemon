@@ -75,6 +75,11 @@ class DriverManager : public DriverHandler {
   std::error_code set_max_tic_frame_size(uint64_t frame_size);
   std::error_code set_playout_delay(uint8_t pcm_id, int32_t delay);
   std::error_code set_capture_delay(uint8_t pcm_id, int32_t delay);
+  /* W15 in-place re-rate: re-key the PCM's (domain,rate) timer entry to `rate`
+   * without recreating its card. Returns {} if applied immediately (chip idle),
+   * DriverErrc::busy if the chip is held open (armed — the kernel applies it on
+   * the client's last close; the caller should retry until it clears). */
+  std::error_code set_pcm_rate(uint8_t pcm_id, uint32_t rate);
   std::error_code get_number_of_inputs(uint8_t pcm_id, int32_t& inputs);
   std::error_code get_number_of_outputs(uint8_t pcm_id, int32_t& outputs);
 

@@ -2171,36 +2171,104 @@ void SessionManager::update_sinks() {
       std::list<RemoteSource> remote_sources = browser_->get_remote_sources();
       auto sinks_list = get_updated_sinks(remote_sources);
       for (auto& sink : sinks_list) {
-        // If the sink's pcm is flagged to follow its source rate, re-rate the
-        // pcm to the new source's rate BEFORE re-adding the sink, so the
-        // SDP-rate vs pcm-rate check in add_sink passes instead of rejecting.
+        // If the sink's pcm follows its source rate, re-rate the pcm to the new
+        // source's rate BEFORE re-adding the sink, so the SDP-rate vs pcm-rate
+        // check in add_sink passes instead of rejecting. Per the owning card's
+        // rate_change_mode: "recreate" rebuilds the card (recreate_card_),
+        // "in-place" re-keys the live chip (SetPCMRate) — and if the kernel arms
+        // that (client still holds the device), the sink re-add is deferred to
+        // process_pending_rerates_ on the worker.
+        bool deferred = false;
         Pcm pcm;
         if (pcm_for_id_(sink.pcm, pcm) && pcm.rate_follows_source) {
           StreamInfo info;
           if (parse_sdp(sink.sdp, info)) {
             uint32_t new_rate = info.stream[0].m_ui32SamplingRate;
             if (new_rate != 0 && new_rate != pcm.sample_rate) {
+              Card card;
+              bool in_place = !get_card_by_name(pcm.card, card) &&
+                              card.rate_change_mode == "in-place";
               BOOST_LOG_TRIVIAL(info)
-                  << "session_manager:: auto-follow: re-rating pcm \""
-                  << pcm.name << "\" (card \"" << pcm.card << "\") "
-                  << pcm.sample_rate << " -> " << new_rate
-                  << " to match source of sink " << std::to_string(sink.id);
-              Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
-              np.sample_rate = new_rate;
-              np.name = "";  // update_pcm: empty name => keep current name
-              if (auto ec = update_pcm(pcm.card, pcm.name, np)) {
-                BOOST_LOG_TRIVIAL(warning)
-                    << "session_manager:: auto-follow re-rate of pcm \""
-                    << pcm.name << "\" failed: " << ec.message();
+                  << "session_manager:: auto-follow: re-rating pcm \"" << pcm.name
+                  << "\" (card \"" << pcm.card << "\", "
+                  << (in_place ? "in-place" : "recreate") << ") " << pcm.sample_rate
+                  << " -> " << new_rate << " to match source of sink "
+                  << std::to_string(sink.id);
+              if (in_place) {
+                auto ec = driver_->set_pcm_rate(pcm.pcm_id, new_rate);
+                if (!ec) {
+                  set_pcm_rate_model_(pcm.pcm_id, new_rate);  // applied; add_sink below
+                } else if (ec == DriverErrc::busy) {
+                  pending_rerates_.push_back({pcm.pcm_id, new_rate, sink, 0});
+                  deferred = true;  // re-add the sink once the re-rate applies
+                  BOOST_LOG_TRIVIAL(info)
+                      << "session_manager:: in-place re-rate of pcm \"" << pcm.name
+                      << "\" armed (client holds the device); retrying on the worker";
+                } else {
+                  BOOST_LOG_TRIVIAL(warning)
+                      << "session_manager:: in-place re-rate of pcm \"" << pcm.name
+                      << "\" failed: " << ec.message();
+                }
+              } else {
+                Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
+                np.sample_rate = new_rate;
+                np.name = "";  // update_pcm: empty name => keep current name
+                if (auto ec = update_pcm(pcm.card, pcm.name, np)) {
+                  BOOST_LOG_TRIVIAL(warning)
+                      << "session_manager:: auto-follow re-rate of pcm \"" << pcm.name
+                      << "\" failed: " << ec.message();
+                }
               }
             }
           }
         }
-        // Re-add sink with new SDP, since the sink.id is the same there will be
-        // an update
-        add_sink(sink);
+        // Re-add sink with new SDP (same id => an update), unless an armed
+        // in-place re-rate deferred it.
+        if (!deferred)
+          add_sink(sink);
       }
       last_sink_update_ = last_update;
+    }
+  }
+}
+
+void SessionManager::set_pcm_rate_model_(uint8_t pcm_id, uint32_t new_rate) {
+  /* The kernel already re-keyed the chip (SetPCMRate applied); reflect the new
+   * rate in the daemon model so the rate guards + status agree. Persistence is
+   * shutdown-only (like every other topology mutation). */
+  std::unique_lock cards_lock(cards_mutex_);
+  auto it = pcms_.find(pcm_id);
+  if (it != pcms_.end()) {
+    it->second.sample_rate = new_rate;
+    BOOST_LOG_TRIVIAL(info)
+        << "session_manager:: in-place re-rate applied: pcm \"" << it->second.name
+        << "\" (pcm_id " << (int)pcm_id << ") -> " << new_rate << " Hz";
+  }
+}
+
+void SessionManager::process_pending_rerates_() {
+  /* Worker-thread retry of in-place re-rates the kernel ARMED (chip held open).
+   * Each tick, re-issue SetPCMRate; when it applies (client released the device)
+   * update the model + re-add the deferred sink at the new rate. */
+  for (auto it = pending_rerates_.begin(); it != pending_rerates_.end();) {
+    auto ec = driver_->set_pcm_rate(it->pcm_id, it->new_rate);
+    if (!ec) {
+      set_pcm_rate_model_(it->pcm_id, it->new_rate);
+      add_sink(it->sink);
+      BOOST_LOG_TRIVIAL(info)
+          << "session_manager:: in-place re-rate of pcm_id " << (int)it->pcm_id
+          << " applied after " << it->tries << " retr(y/ies); sink "
+          << (int)it->sink.id << " re-added at " << it->new_rate << " Hz";
+      it = pending_rerates_.erase(it);
+    } else if (ec == DriverErrc::busy && ++it->tries < kRerateMaxTries) {
+      ++it;  // still held open — keep retrying
+    } else {
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: in-place re-rate of pcm_id " << (int)it->pcm_id
+          << " to " << it->new_rate << " abandoned after " << it->tries
+          << " tries (" << ec.message() << "); sink " << (int)it->sink.id
+          << " left at its previous rate until the next source update";
+      it = pending_rerates_.erase(it);
     }
   }
 }
@@ -2401,6 +2469,7 @@ bool SessionManager::worker() {
     }
 
     update_sinks();
+    process_pending_rerates_();  // W15: retry any armed in-place re-rates
 
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
