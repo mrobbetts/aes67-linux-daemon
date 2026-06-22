@@ -31,7 +31,9 @@ enum class DriverErrc {
   command_not_found = 14,            // driver -404 command not found
   unknown_command = 15,              // driver -314 unknown command
   invalid_daemon_response = 16,      // driver -303 invalid daemon response
-  invalid_daemon_response_size = 17  // driver -302 invalid daemon response
+  invalid_daemon_response_size = 17, // driver -302 invalid daemon response
+  busy = 18                          // driver -16 (-EBUSY): in-place re-rate
+                                     // armed, chip still held open — retry (W15)
 };
 
 namespace std {

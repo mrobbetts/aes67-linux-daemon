@@ -364,6 +364,16 @@ std::error_code DriverManager::set_capture_delay(uint8_t pcm_id, int32_t delay) 
   return retcode_;
 }
 
+std::error_code DriverManager::set_pcm_rate(uint8_t pcm_id, uint32_t rate) {
+  /* W15: payload {int32_t pcm_id, uint32_t sample_rate}. retcode_ == {} means
+   * applied (chip was idle); DriverErrc::busy means armed (chip held open, the
+   * kernel applies on last close — the caller retries). */
+  int32_t buf[2] = { pcm_id, static_cast<int32_t>(rate) };
+  this->send_command(MT_ALSA_Msg_SetPCMRate, sizeof(buf),
+                     reinterpret_cast<const uint8_t*>(buf));
+  return retcode_;
+}
+
 std::error_code DriverManager::get_number_of_inputs(uint8_t pcm_id,
                                                     int32_t& inputs) {
   /* Payload: int32_t pcm_id. Reply: uint32_t count. */

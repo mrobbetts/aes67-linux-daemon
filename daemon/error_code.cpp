@@ -46,6 +46,8 @@ std::string DriverErrCategory::message(int ev) const {
       return "invalid daemon response";
     case DriverErrc::invalid_daemon_response_size:
       return "invalid daemon response";
+    case DriverErrc::busy:
+      return "in-place re-rate armed (chip held open) — retry when released";
     default:
       return "(unrecognized driver error)";
   }
@@ -53,6 +55,8 @@ std::string DriverErrCategory::message(int ev) const {
 
 std::error_code get_driver_error(int code) {
   switch (code) {
+    case -16:  // -EBUSY: W15 SetPCMRate armed, chip still held open
+      return DriverErrc::busy;
     case -302:
       return DriverErrc::invalid_daemon_response_size;
     case -303:

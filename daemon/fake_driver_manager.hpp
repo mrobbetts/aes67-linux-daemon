@@ -62,6 +62,7 @@ class DriverManager {
   std::error_code set_max_tic_frame_size(uint64_t frame_size);
   std::error_code set_playout_delay(uint8_t pcm_id, int32_t delay);
   std::error_code set_capture_delay(uint8_t pcm_id, int32_t delay);
+  std::error_code set_pcm_rate(uint8_t pcm_id, uint32_t rate);  // W15
   std::error_code get_number_of_inputs(uint8_t pcm_id, int32_t& inputs);
   std::error_code get_number_of_outputs(uint8_t pcm_id, int32_t& outputs);
 

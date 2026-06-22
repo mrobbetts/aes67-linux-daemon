@@ -342,6 +342,13 @@ class SessionManager {
   bool pcm_for_id_(uint8_t pcm_id, Pcm& out) const;
   bool pcm_declared_(uint8_t pcm_id) const;
   uint32_t rate_for_pcm_(uint8_t pcm_id) const;
+  /* W15 in-place re-rate (rate_change_mode == "in-place"): update only the
+   * daemon's model rate for a PCM (the kernel already re-keyed via SetPCMRate);
+   * no card recreate. process_pending_rerates_ runs on the worker thread and
+   * retries any re-rate the kernel ARMED (chip held open) until it applies or
+   * times out, then re-adds the deferred sink. Worker-thread only. */
+  void set_pcm_rate_model_(uint8_t pcm_id, uint32_t new_rate);
+  void process_pending_rerates_();
   /* W11: the PTP clock domain a pcm's stream rides — its owning card's domain.
    * Falls back to the daemon-wide configured domain for an unresolvable pcm
    * (validation rejects those), mirroring rate_for_pcm_. */
@@ -385,6 +392,19 @@ class SessionManager {
   std::map<uint8_t /* handle */, Card> cards_;
   std::map<uint8_t /* pcm_id */, Pcm> pcms_;
   mutable std::shared_mutex cards_mutex_;
+
+  /* W15 in-place re-rate: when SetPCMRate is ARMED (the kernel couldn't apply it
+   * because a client still holds the PCM open), the re-rate + the sink re-add are
+   * parked here and retried on each worker tick until the client releases the
+   * device (or `tries` is exhausted). Touched only by the worker thread (no lock). */
+  struct PendingRerate {
+    uint8_t pcm_id;
+    uint32_t new_rate;
+    StreamSink sink;  // re-added at the new rate once the re-rate applies
+    int tries{0};
+  };
+  std::list<PendingRerate> pending_rerates_;
+  static constexpr int kRerateMaxTries = 30;  // ~30 worker ticks (~30 s)
 
   /* current announced sources */
   std::map<uint32_t /* msg_id_hash */,
