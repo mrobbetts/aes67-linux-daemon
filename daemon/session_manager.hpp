@@ -83,9 +83,15 @@ struct Card {
   uint8_t handle{0};   // kernel card slot [0, card_handle_max); recyclable
   std::string name;    // ALSA card id (hw:<name>); the durable identity
   uint8_t domain{0};   // PTP clock domain (W11; not unique — cards may share)
+  /* W15: how a re-rate of one of this card's PCMs reaches ALSA clients —
+   * "recreate" (default: rebuild the snd_card, today's behaviour) or "in-place"
+   * (re-rate the live PCM, needs a rate-following client). See
+   * is_valid_rate_change_mode in config.hpp. */
+  std::string rate_change_mode{"recreate"};
 
   friend bool operator==(const Card& a, const Card& b) {
-    return a.handle == b.handle && a.name == b.name && a.domain == b.domain;
+    return a.handle == b.handle && a.name == b.name && a.domain == b.domain &&
+           a.rate_change_mode == b.rate_change_mode;
   }
 };
 
@@ -251,10 +257,12 @@ class SessionManager {
    * leaves the card removed. Persistence is shutdown-only (matches streams). */
   std::error_code add_card(const Card& card);
   std::error_code remove_card(uint8_t handle);
-  /* card-level edit: rename and/or re-domain a card (recreates it, keeping its
-   * pcms + re-establishing bound streams). new_name must be non-empty + unique. */
+  /* card-level edit: rename, re-domain, and/or change the rate-change mode
+   * (recreates it, keeping its pcms + re-establishing bound streams). new_name
+   * must be non-empty + unique; new_mode must be a valid rate-change mode. */
   std::error_code update_card(const std::string& name,
-                              const std::string& new_name, uint8_t new_domain);
+                              const std::string& new_name, uint8_t new_domain,
+                              const std::string& new_mode);
   std::list<Card> get_cards() const;
   std::error_code get_card(uint8_t handle, Card& card) const;
   std::error_code get_card_by_name(const std::string& name, Card& card) const;
@@ -325,7 +333,8 @@ class SessionManager {
   std::error_code recreate_card_(const std::string& card_name,
                                  const std::list<Pcm>& new_pcms,
                                  const std::string& new_name = "",
-                                 int new_domain = -1);
+                                 int new_domain = -1,
+                                 const std::string& new_mode = "");
   std::list<Pcm> pcms_of_card_(const std::string& card_name) const;
   /* pcm resolution against the runtime pcm set (pcms_ is authoritative now —
    * NOT daemon.conf device_groups, which is only the first-boot seed). All take

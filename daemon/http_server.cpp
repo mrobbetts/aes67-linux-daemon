@@ -378,7 +378,8 @@ bool HttpServer::init() {
     try {
       Card card = json_to_card(req.body);
       auto ret = session_manager_->update_card(req.matches[1].str(), card.name,
-                                               card.domain);
+                                               card.domain,
+                                               card.rate_change_mode);
       if (ret) {
         set_error(ret, "failed to update card " + req.matches[1].str(), res);
         return;

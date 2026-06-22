@@ -290,11 +290,12 @@ export default class RestAPI {
     });
   }
 
-  static addCard(name, domain) {
+  static addCard(name, domain, rate_change_mode) {
     return this.doFetch(card, {
       body: JSON.stringify({
         name: name,
-        domain: parseInt(domain, 10)
+        domain: parseInt(domain, 10),
+        rate_change_mode: rate_change_mode
       }),
       method: 'POST'
     }).catch(err => {
@@ -312,13 +313,14 @@ export default class RestAPI {
     });
   }
 
-  // rename / re-domain a card (PUT). `name` is the current name (URL); the body
-  // carries the new name + domain.
-  static updateCard(name, newName, domain) {
+  // rename / re-domain / set rate-change mode of a card (PUT). `name` is the
+  // current name (URL); the body carries the new name + domain + mode.
+  static updateCard(name, newName, domain, rate_change_mode) {
     return this.doFetch(card + '/' + encodeURIComponent(name), {
       body: JSON.stringify({
         name: newName,
-        domain: parseInt(domain, 10)
+        domain: parseInt(domain, 10),
+        rate_change_mode: rate_change_mode
       }),
       method: 'PUT'
     }).catch(err => {

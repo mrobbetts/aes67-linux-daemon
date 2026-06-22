@@ -50,7 +50,8 @@ class CardEdit extends Component {
     this.state = {
       name: card.name || '',
       nameErr: !(card.name && card.name.length > 0),
-      domain: card.domain !== undefined ? card.domain : 0
+      domain: card.domain !== undefined ? card.domain : 0,
+      rate_change_mode: card.rate_change_mode || 'recreate'
     };
     this.onSubmit = this.onSubmit.bind(this);
     this.onCancel = this.onCancel.bind(this);
@@ -66,9 +67,9 @@ class CardEdit extends Component {
       this.props.applyEdit();
     }.bind(this);
     if (this.props.isEdit) {
-      RestAPI.updateCard(this.props.card.name, this.state.name, this.state.domain).then(done);
+      RestAPI.updateCard(this.props.card.name, this.state.name, this.state.domain, this.state.rate_change_mode).then(done);
     } else {
-      RestAPI.addCard(this.state.name, this.state.domain).then(done);
+      RestAPI.addCard(this.state.name, this.state.domain, this.state.rate_change_mode).then(done);
     }
   }
 
@@ -105,7 +106,21 @@ class CardEdit extends Component {
                 value={this.state.domain}
                 onChange={e => this.setState({domain: e.target.value})}/> </th>
             </tr>
+            <tr>
+              <th align='left'> <label>Rate-change mode</label> </th>
+              <th align='left'> <select value={this.state.rate_change_mode}
+                onChange={e => this.setState({rate_change_mode: e.target.value})}>
+                <option value='recreate'>recreate (rebuild card)</option>
+                <option value='in-place'>in-place (live re-rate)</option>
+              </select> </th>
+            </tr>
           </tbody></table>
+          <p style={{textAlign: 'center', color: '#888', maxWidth: '32em', fontSize: '0.85em'}}>
+            How a PCM re-rate (e.g. follow-source) reaches ALSA clients:
+            <b> recreate</b> rebuilds the whole card (compatible with PulseAudio/PipeWire,
+            but briefly glitches every PCM on the card); <b> in-place</b> re-rates just
+            the affected PCM (needs a rate-following client such as CamillaDSP).
+          </p>
           <br/>
           <div style={{textAlign: 'center'}}>
             <button onClick={this.onSubmit} disabled={this.state.nameErr ? true : undefined}>Submit</button>

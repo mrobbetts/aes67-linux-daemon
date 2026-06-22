@@ -145,6 +145,8 @@ std::string DaemonErrCategory::message(int ev) const {
       return "pcm name is empty/invalid or the pcm was not found";
     case DaemonErrc::invalid_card_domain:
       return "card PTP domain is out of range";
+    case DaemonErrc::invalid_rate_change_mode:
+      return "card rate-change mode must be \"recreate\" or \"in-place\"";
     default:
       return "(unrecognized daemon error)";
   }

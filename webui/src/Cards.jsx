@@ -205,11 +205,13 @@ class Cards extends Component {
                   style={{border: '1px solid #ccc', borderRadius: '6px', margin: '8px 0', padding: '8px'}}>
                   <div className='tree-card-head'>
                     <b>{card.name}</b> &nbsp;<font color='grey'>(domain {card.domain})</font>&nbsp;{this.lockDot(card.domain)}
+                    { card.rate_change_mode === 'in-place' ?
+                      <font color='#0a7' title='re-rate in place (no card rebuild)'> &nbsp;· in-place</font> : undefined }
                     &nbsp;&nbsp;
                     <span className='pointer-area' title='Add PCM' onClick={() => this.onAddPcm(card.name)}>
                       <img width='20' height='20' src='/plus.png' alt='+pcm'/> </span>
                     &nbsp;
-                    <span className='pointer-area' title='Edit card (rename / domain)' onClick={() => this.onEditCard(card)}>
+                    <span className='pointer-area' title='Edit card (rename / domain / rate-change mode)' onClick={() => this.onEditCard(card)}>
                       <img width='20' height='20' src='/edit.png' alt='edit'/> </span>
                     &nbsp;
                     <span className='pointer-area' title='Remove card' onClick={() => this.onRemoveCard(card.name)}>

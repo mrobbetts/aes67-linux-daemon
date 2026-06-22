@@ -547,6 +547,12 @@ std::error_code SessionManager::add_card(const Card& spec) {
         << " out of range [0," << (int)card_handle_max << ")";
     return DaemonErrc::invalid_card_domain;
   }
+  if (!is_valid_rate_change_mode(card.rate_change_mode)) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: add_card: invalid rate_change_mode \""
+        << card.rate_change_mode << "\"";
+    return DaemonErrc::invalid_rate_change_mode;
+  }
   for (const auto& [h, c] : cards_) {
     (void)h;
     if (c.name == card.name) {
@@ -634,7 +640,8 @@ std::error_code SessionManager::remove_card(uint8_t handle) {
 std::error_code SessionManager::recreate_card_(const std::string& card_name,
                                                const std::list<Pcm>& new_pcms,
                                                const std::string& new_name,
-                                               int new_domain) {
+                                               int new_domain,
+                                               const std::string& new_mode) {
   /* the generic recreate engine behind add_pcm/remove_pcm/update_pcm AND the
    * card-level rename/re-domain (update_card): rebuild `card_name` to hold
    * exactly `new_pcms` (each carrying its pcm_id -- survivors keep theirs, so
@@ -644,6 +651,7 @@ std::error_code SessionManager::recreate_card_(const std::string& card_name,
    * add forced by name-uniqueness): a failed rebuild leaves the card removed. */
   uint8_t old_handle;
   uint8_t domain;
+  std::string mode;
   std::set<uint8_t> old_pcm_ids;
   {
     std::shared_lock cards_lock(cards_mutex_);
@@ -660,6 +668,7 @@ std::error_code SessionManager::recreate_card_(const std::string& card_name,
     }
     old_handle = card->handle;
     domain = card->domain;
+    mode = card->rate_change_mode;
     for (const auto& [pid, pcm] : pcms_) {
       if (pcm.card == card_name) {
         old_pcm_ids.insert(pid);
@@ -669,6 +678,7 @@ std::error_code SessionManager::recreate_card_(const std::string& card_name,
   const std::string target_name = new_name.empty() ? card_name : new_name;
   const uint8_t target_domain =
       new_domain >= 0 ? static_cast<uint8_t>(new_domain) : domain;
+  const std::string target_mode = new_mode.empty() ? mode : new_mode;
 
   /* capture the streams currently bound to any of this card's pcms. */
   std::list<StreamSource> bound_sources;
@@ -703,6 +713,7 @@ std::error_code SessionManager::recreate_card_(const std::string& card_name,
     card.handle = static_cast<uint8_t>(handle);
     card.name = target_name;
     card.domain = target_domain;
+    card.rate_change_mode = target_mode;
     std::list<Pcm> pcms = new_pcms;
     for (auto& p : pcms) {
       p.card = target_name;
@@ -895,17 +906,25 @@ std::error_code SessionManager::update_pcm(const std::string& card_name,
 
 std::error_code SessionManager::update_card(const std::string& name,
                                             const std::string& new_name,
-                                            uint8_t new_domain) {
-  /* card-level edit: rename and/or re-domain. Recreates the card under the new
-   * identity, keeping its pcm set (pcm_ids preserved) and re-establishing bound
-   * streams. NB: renaming changes the hw:<name> ALSA id (clients referencing the
-   * old name must update), and re-domaining moves the card to another PTP
-   * domain (W11) -- both surfaced in the WebUI. */
+                                            uint8_t new_domain,
+                                            const std::string& new_mode) {
+  /* card-level edit: rename, re-domain, and/or change the rate-change mode.
+   * Recreates the card under the new identity, keeping its pcm set (pcm_ids
+   * preserved) and re-establishing bound streams. NB: renaming changes the
+   * hw:<name> ALSA id (clients referencing the old name must update),
+   * re-domaining moves the card to another PTP domain (W11), and the rate-change
+   * mode picks recreate vs in-place re-rate (W15) -- all surfaced in the WebUI. */
   if (new_domain >= card_handle_max) {  // card_handle_max == kernel MAX_DOMAINS
     BOOST_LOG_TRIVIAL(error)
         << "session_manager:: update_card: domain " << (int)new_domain
         << " out of range [0," << (int)card_handle_max << ")";
     return DaemonErrc::invalid_card_domain;
+  }
+  if (!is_valid_rate_change_mode(new_mode)) {
+    BOOST_LOG_TRIVIAL(error)
+        << "session_manager:: update_card: invalid rate_change_mode \""
+        << new_mode << "\"";
+    return DaemonErrc::invalid_rate_change_mode;
   }
   std::list<Pcm> pcms;
   {
@@ -940,8 +959,9 @@ std::error_code SessionManager::update_card(const std::string& name,
   }
   BOOST_LOG_TRIVIAL(info) << "session_manager:: update_card \"" << name
                           << "\" -> name=\"" << new_name << "\" domain="
-                          << (int)new_domain;
-  return recreate_card_(name, pcms, new_name, static_cast<int>(new_domain));
+                          << (int)new_domain << " mode=\"" << new_mode << "\"";
+  return recreate_card_(name, pcms, new_name, static_cast<int>(new_domain),
+                        new_mode);
 }
 
 std::list<Card> SessionManager::get_cards() const {
