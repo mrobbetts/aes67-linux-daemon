@@ -51,6 +51,18 @@ inline bool is_valid_pcm_rate(uint32_t rate) {
   }
 }
 
+/* W15: a card's rate-change mode picks how a re-rate of one of its PCMs is
+ * propagated to ALSA clients. "recreate" (default, today's behaviour) tears the
+ * snd_card down and rebuilds it at the new rate -- maximally compatible with
+ * heavyweight clients (PulseAudio/PipeWire re-enumerate when the card vanishes)
+ * but glitches every PCM on the card. "in-place" re-rates the existing PCM
+ * without destroying the card (latched SetPCMRate + current-rate kcontrol) --
+ * surgical, but needs a client that follows the rate. Per-card because a
+ * recreate's blast radius is the whole card. */
+inline bool is_valid_rate_change_mode(const std::string& mode) {
+  return mode == "recreate" || mode == "in-place";
+}
+
 class Config {
  public:
   /* save new config to json file */

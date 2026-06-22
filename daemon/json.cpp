@@ -184,7 +184,9 @@ std::string card_to_json(const Card& card) {
   std::stringstream ss;
   ss << "\n  {" << "\n    \"handle\": " << unsigned(card.handle)
      << ",\n    \"name\": \"" << escape_json(card.name) << "\""
-     << ",\n    \"domain\": " << unsigned(card.domain) << "\n  }";
+     << ",\n    \"domain\": " << unsigned(card.domain)
+     << ",\n    \"rate_change_mode\": \"" << escape_json(card.rate_change_mode)
+     << "\"\n  }";
   return ss.str();
 }
 
@@ -369,7 +371,9 @@ std::string status_to_json(const std::list<Card>& cards,
     }
     ss << "\n  {" << "\n    \"handle\": " << unsigned(card.handle)
        << ",\n    \"name\": \"" << escape_json(card.name) << "\""
-       << ",\n    \"domain\": " << unsigned(card.domain) << ",\n    \"pcms\": [";
+       << ",\n    \"domain\": " << unsigned(card.domain)
+       << ",\n    \"rate_change_mode\": \"" << escape_json(card.rate_change_mode)
+       << "\",\n    \"pcms\": [";
     int pcount = 0;
     for (auto const& pcm : pcms) {
       if (pcm.card != card.name) {
@@ -593,6 +597,10 @@ Card json_to_card(const std::string& json) {
        ptree "No such node (name)". */
     card.name = remove_undesired_chars(pt.get<std::string>("name", ""));
     card.domain = pt.get<uint8_t>("domain", 0);
+    /* W15: optional; defaults to "recreate" (today's behaviour). Validated in
+       add_card/update_card, not here. */
+    card.rate_change_mode =
+        pt.get<std::string>("rate_change_mode", "recreate");
   } catch (boost::property_tree::json_parser::json_parser_error& je) {
     throw std::runtime_error("error parsing JSON at line " +
                              std::to_string(je.line()) + " :" + je.message());
@@ -806,6 +814,9 @@ static void parse_json_cards(boost::property_tree::ptree& pt,
     card.handle = v.second.get<uint8_t>("handle", 0);
     card.name = v.second.get<std::string>("name", "");
     card.domain = v.second.get<uint8_t>("domain", 0);
+    /* W15: tolerant of a pre-W15 status.json (no field) -> "recreate". */
+    card.rate_change_mode =
+        v.second.get<std::string>("rate_change_mode", "recreate");
     cards.emplace_back(card);
     auto pcms_node = v.second.get_child_optional("pcms");
     if (pcms_node) {
