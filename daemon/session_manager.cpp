@@ -2305,29 +2305,40 @@ void SessionManager::update_sinks() {
                 << " -> " << new_rate << " to match source of sink "
                 << std::to_string(sink.id);
             if (in_place) {
-              // Record the pending BEFORE arming, so the kernel's apply event
-              // (fired the instant the client closes) can never beat the record.
-              // (armed_at omitted => default member init = now(); a literal {}
-              // would force the epoch and the GC would drop it on the first pass)
-              pending_rerates_.push_back({pcm.pcm_id, new_rate, sink});
-              auto ec = driver_->set_pcm_rate(pcm.pcm_id, new_rate);
-              if (!ec) {
-                // applied at once (chip idle): no close-apply event will come,
-                // so do the bookkeeping now; add_sink runs below.
-                set_pcm_rate_model_(pcm.pcm_id, new_rate);
-                reannounce_pcm_sources_(pcm.pcm_id);  // downstream auto-follow
-                pending_rerates_.pop_back();
-              } else if (ec == DriverErrc::busy) {
-                deferred = true;  // armed; the apply event will re-attach the sink
-                BOOST_LOG_TRIVIAL(info)
-                    << "session_manager:: in-place re-rate of pcm \"" << pcm.name
-                    << "\" armed (client holds the device); will re-attach on the "
-                       "kernel's apply event";
+              // Dedup: if the kernel already holds this exact re-rate latched for
+              // this pcm (the client still hasn't released it), DON'T re-arm — that
+              // was an every-browse-tick storm. A changed target replaces the stale
+              // record so we re-arm with the new rate.
+              auto pend = std::find_if(
+                  pending_rerates_.begin(), pending_rerates_.end(),
+                  [&](const PendingRerate& p) { return p.pcm_id == pcm.pcm_id; });
+              if (pend != pending_rerates_.end() && pend->new_rate == new_rate) {
+                deferred = true;  // already armed for new_rate; await the apply event
               } else {
-                pending_rerates_.pop_back();
-                BOOST_LOG_TRIVIAL(warning)
-                    << "session_manager:: in-place re-rate of pcm \"" << pcm.name
-                    << "\" failed: " << ec.message();
+                if (pend != pending_rerates_.end())
+                  pending_rerates_.erase(pend);  // re-targeting: drop the stale latch
+                // Record the pending BEFORE arming, so the kernel's apply event
+                // (fired the instant the client closes) can never beat the record.
+                pending_rerates_.push_back({pcm.pcm_id, new_rate, sink});
+                auto ec = driver_->set_pcm_rate(pcm.pcm_id, new_rate);
+                if (!ec) {
+                  // applied at once (chip idle): no close-apply event will come,
+                  // so do the bookkeeping now; add_sink runs below.
+                  set_pcm_rate_model_(pcm.pcm_id, new_rate);
+                  reannounce_pcm_sources_(pcm.pcm_id);  // downstream auto-follow
+                  pending_rerates_.pop_back();
+                } else if (ec == DriverErrc::busy) {
+                  deferred = true;  // armed; the apply event will re-attach the sink
+                  BOOST_LOG_TRIVIAL(info)
+                      << "session_manager:: in-place re-rate of pcm \"" << pcm.name
+                      << "\" armed (client holds the device); will re-attach on the "
+                         "kernel's apply event";
+                } else {
+                  pending_rerates_.pop_back();
+                  BOOST_LOG_TRIVIAL(warning)
+                      << "session_manager:: in-place re-rate of pcm \"" << pcm.name
+                      << "\" failed: " << ec.message();
+                }
               }
             } else {
               Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
@@ -2368,8 +2379,8 @@ void SessionManager::set_pcm_rate_model_(uint8_t pcm_id, uint32_t new_rate) {
 void SessionManager::process_rerate_events_() {
   /* Wait (up to 1 s, or until a PCMRateApplied event / shutdown wakes us) for the
    * kernel to report armed in-place re-rates that applied on the client's last
-   * close, then re-attach each deferred sink. The 1 s timeout also drives the
-   * GC + lets the worker's other periodic work run. */
+   * close, then sync the model and re-attach each deferred sink. The 1 s timeout
+   * just lets the worker's other periodic work run. */
   std::list<std::pair<uint8_t, uint32_t>> applied;
   {
     std::unique_lock<std::mutex> lk(rerate_events_->mtx);
@@ -2378,39 +2389,28 @@ void SessionManager::process_rerate_events_() {
     });
     applied.swap(rerate_events_->applied);
   }
-  // (a) re-attach the deferred sink for each re-rate the kernel applied on close
   for (auto& [pcm_id, rate] : applied) {
-    auto it = pending_rerates_.end();
-    for (auto i = pending_rerates_.begin(); i != pending_rerates_.end(); ++i) {
-      if (i->pcm_id == pcm_id) {
-        it = i;
-        break;
-      }
-    }
-    if (it == pending_rerates_.end()) {
-      continue;  // idle-applied already, or spurious
-    }
+    /* The kernel is authoritative for the live chip rate: sync the model and
+     * re-announce on EVERY apply event, whether or not we still hold a pending.
+     * Discarding an event with no matching pending is exactly what desynced the
+     * daemon from the kernel (a long-held client outlives any record we keep). */
     set_pcm_rate_model_(pcm_id, rate);
-    add_sink(it->sink);
     reannounce_pcm_sources_(pcm_id);  // let downstream receivers auto-follow
-    BOOST_LOG_TRIVIAL(info)
-        << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
-        << " applied (kernel event); sink " << (int)it->sink.id << " re-added at "
-        << rate << " Hz";
-    pending_rerates_.erase(it);
-  }
-  // (b) GC: drop a pending whose apply event never arrived (client never released)
-  auto now = std::chrono::steady_clock::now();
-  for (auto it = pending_rerates_.begin(); it != pending_rerates_.end();) {
-    if (now - it->armed_at > kRerateTimeout) {
-      BOOST_LOG_TRIVIAL(warning)
-          << "session_manager:: in-place re-rate of pcm_id " << (int)it->pcm_id
-          << " to " << it->new_rate << " abandoned (no apply event in "
-          << kRerateTimeout.count() << "s); sink " << (int)it->sink.id
-          << " left until the next source update";
-      it = pending_rerates_.erase(it);
+    /* re-attach the deferred sink iff we recorded one for this pcm */
+    auto it = std::find_if(
+        pending_rerates_.begin(), pending_rerates_.end(),
+        [pcm_id](const PendingRerate& p) { return p.pcm_id == pcm_id; });
+    if (it != pending_rerates_.end()) {
+      add_sink(it->sink);
+      BOOST_LOG_TRIVIAL(info)
+          << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
+          << " applied (kernel event); sink " << (int)it->sink.id
+          << " re-added at " << rate << " Hz";
+      pending_rerates_.erase(it);
     } else {
-      ++it;
+      BOOST_LOG_TRIVIAL(info)
+          << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
+          << " applied (kernel event); model synced to " << rate << " Hz";
     }
   }
 }
