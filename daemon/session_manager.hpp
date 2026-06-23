@@ -303,6 +303,13 @@ class SessionManager {
 
   std::list<StreamSink> get_updated_sinks(
       const std::list<RemoteSource>& sources_list);
+  /* W15 rate-follow: sinks whose rate_follows_source pcm must re-rate because a
+   * discovered same-origin source now advertises a different sample rate —
+   * independent of the SDP o= session-version. Catches sources (e.g. the VAD)
+   * that change rate without bumping the version, which get_updated_sinks
+   * correctly ignores. Flap-free: converges once pcm rate == source rate. */
+  std::list<StreamSink> get_rate_follow_sinks(
+      const std::list<RemoteSource>& sources_list);
   void update_sinks();
 
   void on_add_source(const StreamSource& source, const StreamInfo& info);
