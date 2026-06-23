@@ -20,6 +20,8 @@
 #ifndef _SESSION_MANAGER_HPP_
 #define _SESSION_MANAGER_HPP_
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <future>
@@ -27,7 +29,6 @@
 #include <map>
 #include <shared_mutex>
 #include <thread>
-#include <chrono>
 
 #include "config.hpp"
 #include "driver_interface.hpp"
@@ -477,6 +478,17 @@ class SessionManager {
    * the worker for the Cards per-PCM dots. Guarded by ptp_mutex_. */
   std::map<uint8_t, std::string> ptp_pcm_status_;
   mutable std::shared_mutex ptp_mutex_;
+  /* W28 (intent-in/truth-out): the kernel is the source of truth for the LIVE
+   * chip rate and the ARMED re-rate target. Mirrored lock-free from
+   * GetPCMStatus (worker status poll) + PCMRateApplied (immediate) so
+   * rate_for_pcm_ reads kernel truth rather than a speculative cache — this is
+   * what makes the daemon<->kernel rate desync structurally impossible. 0 = not
+   * yet mirrored (rate_for_pcm_ falls back to the configured/intent rate, e.g.
+   * the startup window before the first poll, or the fake driver). Indexed by
+   * pcm_id; reads are load-acquire, writes store-release (no lock, so safe to
+   * read from rate_for_pcm_ which runs under ptp_mutex_/cards_mutex_). */
+  std::array<std::atomic<uint32_t>, pcm_id_max> pcm_live_rate_{};
+  std::array<std::atomic<uint32_t>, pcm_id_max> pcm_pending_rate_{};
 
   std::list<SourceObserver> add_source_observers_;
   std::list<SourceObserver> remove_source_observers_;
