@@ -327,6 +327,12 @@ class SessionManager {
   void on_ptp_status_changed(const std::string& status) const;
 
   void on_update_sources();
+  /* W15: after pcm_id re-rates in place, push a fresh ANNOUNCE (bumped o=
+   * version, SDP regenerated at the new rate) for any source on that pcm — so
+   * RTSP/SAP receivers (e.g. a Hapi) re-pull and auto-follow the new rate
+   * instead of dropping until manually re-selected. Targeted variant of
+   * on_update_sources (which re-announces every source on a GMID change). */
+  void reannounce_pcm_sources_(uint8_t pcm_id);
 
   std::string get_removed_source_sdp_(uint32_t id,
                                       uint32_t src_addr,
