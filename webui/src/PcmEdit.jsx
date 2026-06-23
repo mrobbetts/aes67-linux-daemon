@@ -56,7 +56,8 @@ class PcmEdit extends Component {
       numOutputs: this.props.pcm.num_outputs || 0,
       playoutDelay: this.props.pcm.playout_delay || 0,
       captureDelay: this.props.pcm.capture_delay || 0,
-      rateFollowsSource: this.props.pcm.rate_follows_source || false
+      rateFollowsSource: this.props.pcm.rate_follows_source || false,
+      rateFollowStrictVersion: this.props.pcm.rate_follow_strict_version || false
     };
     this.onSubmit = this.onSubmit.bind(this);
     this.onCancel = this.onCancel.bind(this);
@@ -76,11 +77,12 @@ class PcmEdit extends Component {
       RestAPI.updatePcm(this.props.cardName, this.props.pcm.name, this.state.name,
         this.state.sampleRate, this.state.numInputs, this.state.numOutputs,
         this.state.playoutDelay, this.state.captureDelay,
-        this.state.rateFollowsSource).then(done);
+        this.state.rateFollowsSource, this.state.rateFollowStrictVersion).then(done);
     } else {
       RestAPI.addPcm(this.props.cardName, this.state.name, this.state.sampleRate,
         this.state.numInputs, this.state.numOutputs, this.state.playoutDelay,
-        this.state.captureDelay, this.state.rateFollowsSource).then(done);
+        this.state.captureDelay, this.state.rateFollowsSource,
+        this.state.rateFollowStrictVersion).then(done);
     }
   }
 
@@ -139,6 +141,14 @@ class PcmEdit extends Component {
               <th align='left'> <input type='checkbox'
                 checked={this.state.rateFollowsSource}
                 onChange={e => this.setState({rateFollowsSource: e.target.checked})}/> </th>
+            </tr>
+            <tr>
+              <th align='left'> <label style={{color: this.state.rateFollowsSource ? undefined : '#aaa', paddingLeft: '1.5em'}}>
+                Require source SDP version bump (strict)</label> </th>
+              <th align='left'> <input type='checkbox'
+                disabled={!this.state.rateFollowsSource}
+                checked={this.state.rateFollowStrictVersion}
+                onChange={e => this.setState({rateFollowStrictVersion: e.target.checked})}/> </th>
             </tr>
           </tbody></table>
           <br/>

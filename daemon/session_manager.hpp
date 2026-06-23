@@ -112,6 +112,11 @@ struct Pcm {
   int32_t playout_delay{0};
   int32_t capture_delay{0};
   bool rate_follows_source{false};  // auto re-rate to match bound sink's source
+  /* W15: when following, require the source to bump its SDP o= session-version
+   * to count as a rate change (strict RFC 4566). Default false (lenient): follow
+   * a rate change even from a source that never increments its version (e.g. the
+   * macOS VAD). Only meaningful when rate_follows_source is set. */
+  bool rate_follow_strict_version{false};
 
   friend bool operator==(const Pcm& a, const Pcm& b) {
     return a.pcm_id == b.pcm_id && a.card == b.card && a.name == b.name &&
@@ -119,7 +124,8 @@ struct Pcm {
            a.num_outputs == b.num_outputs &&
            a.playout_delay == b.playout_delay &&
            a.capture_delay == b.capture_delay &&
-           a.rate_follows_source == b.rate_follows_source;
+           a.rate_follows_source == b.rate_follows_source &&
+           a.rate_follow_strict_version == b.rate_follow_strict_version;
   }
 };
 

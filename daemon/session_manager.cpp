@@ -2244,8 +2244,10 @@ std::list<StreamSink> SessionManager::get_rate_follow_sinks(
   std::list<StreamSink> sinks_list;
   for (auto& c : candidates) {
     Pcm pcm;
+    // Skip pcms that opted into strict RFC-4566 versioning — those follow only
+    // via get_updated_sinks' version-bump gate, never this version-blind path.
     if (pcm_for_id_(c.sink.pcm, pcm) && pcm.rate_follows_source &&
-        c.src_rate != pcm.sample_rate) {
+        !pcm.rate_follow_strict_version && c.src_rate != pcm.sample_rate) {
       BOOST_LOG_TRIVIAL(info)
           << "session_manager:: sink " << std::to_string(c.sink.id)
           << " rate-follow: source advertises " << c.src_rate << " Hz, pcm \""

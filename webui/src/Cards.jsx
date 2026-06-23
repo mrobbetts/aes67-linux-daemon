@@ -158,7 +158,8 @@ class Cards extends Component {
   onAddPcm(cardName) {
     const defaultPcm = {
       name: '', sample_rate: 48000, num_inputs: 2, num_outputs: 2,
-      playout_delay: 0, capture_delay: 0, rate_follows_source: false
+      playout_delay: 0, capture_delay: 0, rate_follows_source: false,
+      rate_follow_strict_version: false
     };
     this.setState({
       pcmEditIsOpen: true, pcmEditCard: cardName, pcm: defaultPcm,
