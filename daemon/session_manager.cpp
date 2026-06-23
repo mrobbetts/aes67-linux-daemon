@@ -220,19 +220,29 @@ bool SessionManager::parse_sdp(const std::string& sdp, StreamInfo& info) const {
                       std::stoul(fields[1]);
                 }
               } else if (name == "ts-refclk" && !info.ignore_refclk_gmid) {
-                /* a=ts-refclk:ptp=IEEE1588-2008:00-0C-29-FF-FE-0E-90-C8:0 */
+                /* a=ts-refclk:ptp=IEEE1588-2008:00-0C-29-FF-FE-0E-90-C8:0
+                 * Validate the stream's advertised GM against the GMID we are
+                 * locked to IN THE DOMAIN THE SDP DECLARES (fields[2]) — not a
+                 * single daemon-wide domain (W11: a sink may live in any domain).
+                 * The per-domain GMID is mirrored from the kernel into
+                 * ptp_status_by_domain_; mirror get_source_sdp_'s lookup. We only
+                 * reject a PROVEN mismatch: if that domain isn't mirrored yet we
+                 * can't validate, so we accept rather than false-reject (which is
+                 * exactly what the old global-gmid check did to other domains). */
                 std::vector<std::string> fields;
                 boost::split(fields, value,
                              [line](char c) { return c == ':'; });
                 if (fields.size() == 3) {
-                  if (fields[1] != ptp_status_.gmid ||
-                      stoi(fields[2]) != ptp_config_.domain) {
+                  uint8_t sdp_domain = static_cast<uint8_t>(stoi(fields[2]));
+                  std::shared_lock ptp_lock(ptp_mutex_);
+                  auto it = ptp_status_by_domain_.find(sdp_domain);
+                  if (it != ptp_status_by_domain_.end() &&
+                      !it->second.gmid.empty() && fields[1] != it->second.gmid) {
                     BOOST_LOG_TRIVIAL(warning)
-                        << "session_manager:: configured PTP grand master "
-                           "clock "
-                           "doesn't match the PTP clock in SDP at line "
-                        << num;
-
+                        << "session_manager:: SDP grand master " << fields[1]
+                        << " in domain " << (int)sdp_domain
+                        << " doesn't match the locked GM " << it->second.gmid
+                        << " at line " << num;
                     return false;
                   }
                 }
