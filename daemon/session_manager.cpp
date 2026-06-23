@@ -2142,6 +2142,31 @@ size_t SessionManager::process_sap() {
   return sdp_len_sum;
 }
 
+/* Pull the media sample rate from the first audio rtpmap of an SDP
+ * (a=rtpmap:<pt> <codec>/<rate>[/<ch>]); 0 if absent/unparseable. Rate-follow
+ * detection needs only the rate, so unlike parse_sdp this neither validates the
+ * PTP refclk/gmid (which legitimately differs per domain) nor warns per tick. */
+static uint32_t sdp_media_rate(const std::string& sdp) {
+  std::stringstream ss(sdp);
+  std::string line;
+  while (std::getline(ss, line, '\n')) {
+    boost::trim(line);
+    if (line.rfind("a=rtpmap:", 0) != 0)
+      continue;
+    auto first = line.find('/');
+    if (first == std::string::npos)
+      continue;
+    auto second = line.find('/', first + 1);
+    auto len = (second == std::string::npos ? line.size() : second) - first - 1;
+    try {
+      return static_cast<uint32_t>(std::stoul(line.substr(first + 1, len)));
+    } catch (...) {
+      return 0;
+    }
+  }
+  return 0;
+}
+
 std::list<StreamSink> SessionManager::get_updated_sinks(
     const std::list<RemoteSource>& sources_list) {
   std::list<StreamSink> sinks_list;
@@ -2197,10 +2222,7 @@ std::list<StreamSink> SessionManager::get_rate_follow_sinks(
             !(sinks_[sink.id].origin == source.origin) ||
             sink.sdp == source.sdp)
           continue;
-        StreamInfo si;
-        if (!parse_sdp(source.sdp, si))
-          continue;
-        uint32_t src_rate = si.stream[0].m_ui32SamplingRate;
+        uint32_t src_rate = sdp_media_rate(source.sdp);
         if (src_rate == 0)
           continue;
         sink.sdp = source.sdp;  // adopt the new SDP (mDNS/SAP carry the same body)
@@ -2255,52 +2277,53 @@ void SessionManager::update_sinks() {
         bool deferred = false;
         Pcm pcm;
         if (pcm_for_id_(sink.pcm, pcm) && pcm.rate_follows_source) {
-          StreamInfo info;
-          if (parse_sdp(sink.sdp, info)) {
-            uint32_t new_rate = info.stream[0].m_ui32SamplingRate;
-            if (new_rate != 0 && new_rate != pcm.sample_rate) {
-              Card card;
-              bool in_place = !get_card_by_name(pcm.card, card) &&
-                              card.rate_change_mode == "in-place";
-              BOOST_LOG_TRIVIAL(info)
-                  << "session_manager:: auto-follow: re-rating pcm \"" << pcm.name
-                  << "\" (card \"" << pcm.card << "\", "
-                  << (in_place ? "in-place" : "recreate") << ") " << pcm.sample_rate
-                  << " -> " << new_rate << " to match source of sink "
-                  << std::to_string(sink.id);
-              if (in_place) {
-                // Record the pending BEFORE arming, so the kernel's apply event
-                // (fired the instant the client closes) can never beat the record.
-                // (armed_at omitted => default member init = now(); a literal {}
-                // would force the epoch and the GC would drop it on the first pass)
-                pending_rerates_.push_back({pcm.pcm_id, new_rate, sink});
-                auto ec = driver_->set_pcm_rate(pcm.pcm_id, new_rate);
-                if (!ec) {
-                  // applied at once (chip idle): no close-apply event will come,
-                  // so do the bookkeeping now; add_sink runs below.
-                  set_pcm_rate_model_(pcm.pcm_id, new_rate);
-                  pending_rerates_.pop_back();
-                } else if (ec == DriverErrc::busy) {
-                  deferred = true;  // armed; the apply event will re-attach the sink
-                  BOOST_LOG_TRIVIAL(info)
-                      << "session_manager:: in-place re-rate of pcm \"" << pcm.name
-                      << "\" armed (client holds the device); will re-attach on the "
-                         "kernel's apply event";
-                } else {
-                  pending_rerates_.pop_back();
-                  BOOST_LOG_TRIVIAL(warning)
-                      << "session_manager:: in-place re-rate of pcm \"" << pcm.name
-                      << "\" failed: " << ec.message();
-                }
+          // Rate-follow needs only the source rate. Read it directly rather than
+          // via full parse_sdp, which validates the PTP refclk/gmid and so rejects
+          // a legitimate cross-domain source (and would log a warning every browse
+          // tick); the real gmid policy is still enforced later in add_sink.
+          uint32_t new_rate = sdp_media_rate(sink.sdp);
+          if (new_rate != 0 && new_rate != pcm.sample_rate) {
+            Card card;
+            bool in_place = !get_card_by_name(pcm.card, card) &&
+                            card.rate_change_mode == "in-place";
+            BOOST_LOG_TRIVIAL(info)
+                << "session_manager:: auto-follow: re-rating pcm \"" << pcm.name
+                << "\" (card \"" << pcm.card << "\", "
+                << (in_place ? "in-place" : "recreate") << ") " << pcm.sample_rate
+                << " -> " << new_rate << " to match source of sink "
+                << std::to_string(sink.id);
+            if (in_place) {
+              // Record the pending BEFORE arming, so the kernel's apply event
+              // (fired the instant the client closes) can never beat the record.
+              // (armed_at omitted => default member init = now(); a literal {}
+              // would force the epoch and the GC would drop it on the first pass)
+              pending_rerates_.push_back({pcm.pcm_id, new_rate, sink});
+              auto ec = driver_->set_pcm_rate(pcm.pcm_id, new_rate);
+              if (!ec) {
+                // applied at once (chip idle): no close-apply event will come,
+                // so do the bookkeeping now; add_sink runs below.
+                set_pcm_rate_model_(pcm.pcm_id, new_rate);
+                pending_rerates_.pop_back();
+              } else if (ec == DriverErrc::busy) {
+                deferred = true;  // armed; the apply event will re-attach the sink
+                BOOST_LOG_TRIVIAL(info)
+                    << "session_manager:: in-place re-rate of pcm \"" << pcm.name
+                    << "\" armed (client holds the device); will re-attach on the "
+                       "kernel's apply event";
               } else {
-                Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
-                np.sample_rate = new_rate;
-                np.name = "";  // update_pcm: empty name => keep current name
-                if (auto ec = update_pcm(pcm.card, pcm.name, np)) {
-                  BOOST_LOG_TRIVIAL(warning)
-                      << "session_manager:: auto-follow re-rate of pcm \"" << pcm.name
-                      << "\" failed: " << ec.message();
-                }
+                pending_rerates_.pop_back();
+                BOOST_LOG_TRIVIAL(warning)
+                    << "session_manager:: in-place re-rate of pcm \"" << pcm.name
+                    << "\" failed: " << ec.message();
+              }
+            } else {
+              Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
+              np.sample_rate = new_rate;
+              np.name = "";  // update_pcm: empty name => keep current name
+              if (auto ec = update_pcm(pcm.card, pcm.name, np)) {
+                BOOST_LOG_TRIVIAL(warning)
+                    << "session_manager:: auto-follow re-rate of pcm \"" << pcm.name
+                    << "\" failed: " << ec.message();
               }
             }
           }
