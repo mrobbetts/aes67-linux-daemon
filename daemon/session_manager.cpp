@@ -1080,9 +1080,20 @@ bool SessionManager::pcm_declared_(uint8_t pcm_id) const {
 }
 
 uint32_t SessionManager::rate_for_pcm_(uint8_t pcm_id) const {
+  /* W28: the kernel is authoritative for the LIVE rate. Read the lock-free
+   * mirror (GetPCMStatus poll + PCMRateApplied event) so SDP generation, the
+   * sink-fit check and the rate-follow decision all see kernel truth rather
+   * than a cached/commanded value that could have drifted. */
+  if (pcm_id < pcm_id_max) {
+    uint32_t live = pcm_live_rate_[pcm_id].load(std::memory_order_acquire);
+    if (live)
+      return live;
+  }
+  /* Not yet mirrored (startup window before the first poll, or the fake driver):
+   * fall back to the configured/intent rate the PCM was created with. */
   Pcm pcm;
   if (pcm_for_id_(pcm_id, pcm)) {
-    return pcm.sample_rate;  // every PCM carries its own validated rate
+    return pcm.sample_rate;
   }
   /* unknown pcm — validation rejects streams bound to undeclared PCMs, so this
    * is the can't-happen path; there is no daemon-wide default to return. */
@@ -2366,6 +2377,12 @@ void SessionManager::set_pcm_rate_model_(uint8_t pcm_id, uint32_t new_rate) {
   /* The kernel already re-keyed the chip (SetPCMRate applied); reflect the new
    * rate in the daemon model so the rate guards + status agree. Persistence is
    * shutdown-only (like every other topology mutation). */
+  /* W28: kernel truth — update the live-rate mirror immediately (the event is
+   * the prompt; the poll is the backstop). Lock-free, so do it outside the
+   * cards lock. The configured/intent rate below converges to it: an applied
+   * re-rate is one the daemon commanded/followed, so intent == truth here. */
+  if (pcm_id < pcm_id_max)
+    pcm_live_rate_[pcm_id].store(new_rate, std::memory_order_release);
   std::unique_lock cards_lock(cards_mutex_);
   auto it = pcms_.find(pcm_id);
   if (it != pcms_.end()) {
@@ -2595,6 +2612,15 @@ bool SessionManager::worker() {
           TPCMStatus ps;
           if (!driver_->get_pcm_status(pcm.pcm_id, ps)) {
             pcm_status[pcm.pcm_id] = ptp_lock_status_str(ps.nTICLockStatus);
+            /* W28: refresh the kernel-truth live + armed rate mirror. This is the
+             * reconcile backstop — even if a PCMRateApplied event is dropped, the
+             * mirror re-syncs to kernel truth on the next poll. */
+            if (pcm.pcm_id < pcm_id_max) {
+              pcm_live_rate_[pcm.pcm_id].store(ps.live_rate,
+                                               std::memory_order_release);
+              pcm_pending_rate_[pcm.pcm_id].store(ps.pending_rate,
+                                                  std::memory_order_release);
+            }
           }
         }
         {
