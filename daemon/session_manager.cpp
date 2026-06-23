@@ -2315,6 +2315,7 @@ void SessionManager::update_sinks() {
                 // applied at once (chip idle): no close-apply event will come,
                 // so do the bookkeeping now; add_sink runs below.
                 set_pcm_rate_model_(pcm.pcm_id, new_rate);
+                reannounce_pcm_sources_(pcm.pcm_id);  // downstream auto-follow
                 pending_rerates_.pop_back();
               } else if (ec == DriverErrc::busy) {
                 deferred = true;  // armed; the apply event will re-attach the sink
@@ -2391,6 +2392,7 @@ void SessionManager::process_rerate_events_() {
     }
     set_pcm_rate_model_(pcm_id, rate);
     add_sink(it->sink);
+    reannounce_pcm_sources_(pcm_id);  // let downstream receivers auto-follow
     BOOST_LOG_TRIVIAL(info)
         << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
         << " applied (kernel event); sink " << (int)it->sink.id << " re-added at "
@@ -2424,6 +2426,23 @@ void SessionManager::on_update_sources() {
   }
   sources_mutex_.unlock();
   g_session_version++;
+}
+
+void SessionManager::reannounce_pcm_sources_(uint8_t pcm_id) {
+  /* Re-announce only the source(s) on the re-rated pcm. The periodic SAP loop
+   * already carries the new rate, but with an UNCHANGED o= version — so a
+   * conformant receiver ignores it (RFC 4566 monotonicity). Bumping the version
+   * here is what makes the receiver treat it as a new SDP and re-pull. Mirrors
+   * on_update_sources' mechanism (regenerate SDP + notify the RTSP/SAP/file
+   * observers), scoped to the one pcm. Worker context, not holding cards_mutex_. */
+  std::unique_lock sources_lock(sources_mutex_);
+  for (auto& [id, info] : sources_) {
+    if (static_cast<uint8_t>(info.stream[0].m_uiPCMId) != pcm_id)
+      continue;
+    info.session_version++;
+    for (const auto& cb : update_source_observers_)
+      cb(id, info.stream[0].m_cName, get_source_sdp_(id, info));
+  }
 }
 
 void SessionManager::on_ptp_status_changed(const std::string& status) const {
