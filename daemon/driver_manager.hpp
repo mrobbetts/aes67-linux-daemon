@@ -21,6 +21,7 @@
 #define _DRIVER_MANAGER_HPP_
 
 #include <boost/asio.hpp>
+#include <functional>
 #include <mutex>
 
 #include "RTP_stream_info.h"
@@ -86,6 +87,14 @@ class DriverManager : public DriverHandler {
   int32_t get_current_output_volume() const { return output_volume_; };
   int32_t get_current_output_switch() const { return output_switch_; };
 
+  /* W15: register a handler for the kernel's PCMRateApplied K2U event (an armed
+   * in-place re-rate that applied autonomously on the client's last close). The
+   * handler runs on the event-receiver thread and MUST only signal — no
+   * re-entrant driver/session work. */
+  void set_pcm_rate_applied_handler(std::function<void(uint8_t, uint32_t)> h) {
+    pcm_rate_applied_handler_ = std::move(h);
+  }
+
  protected:
   // singleton, use create to build
   DriverManager() = default;
@@ -114,6 +123,8 @@ class DriverManager : public DriverHandler {
 
   int32_t output_volume_{-20};
   int32_t output_switch_{0};
+  std::function<void(uint8_t /*pcm_id*/, uint32_t /*rate*/)>
+      pcm_rate_applied_handler_;  // W15
 };
 
 #endif

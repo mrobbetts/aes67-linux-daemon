@@ -20,6 +20,7 @@
 #ifndef _FAKE_DRIVER_MANAGER_HPP_
 #define _FAKE_DRIVER_MANAGER_HPP_
 
+#include <functional>
 #include <set>
 
 #include "error_code.hpp"
@@ -63,6 +64,8 @@ class DriverManager {
   std::error_code set_playout_delay(uint8_t pcm_id, int32_t delay);
   std::error_code set_capture_delay(uint8_t pcm_id, int32_t delay);
   std::error_code set_pcm_rate(uint8_t pcm_id, uint32_t rate);  // W15
+  /* W15: no kernel -> no autonomous re-rate event; accept + ignore the handler. */
+  void set_pcm_rate_applied_handler(std::function<void(uint8_t, uint32_t)>) {}
   std::error_code get_number_of_inputs(uint8_t pcm_id, int32_t& inputs);
   std::error_code get_number_of_outputs(uint8_t pcm_id, int32_t& outputs);
 

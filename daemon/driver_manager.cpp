@@ -60,7 +60,10 @@ static const std::vector<std::string> alsa_msg_str = {"Start",
                                                       "RemovePCM",
                                                       "AddCard",
                                                       "RegisterCard",
-                                                      "RemoveCard"};
+                                                      "RemoveCard",
+                                                      "GetPCMStatus",
+                                                      "SetPCMRate",
+                                                      "PCMRateApplied"};
 
 static const std::vector<std::string> ptp_status_str = {"unlocked", "locking",
                                                         "locked"};
@@ -460,6 +463,20 @@ void DriverManager::on_event(enum MT_ALSA_msg_id id,
       memcpy(resp, &output_switch_, resp_size);
       BOOST_LOG_TRIVIAL(info)
           << "driver_manager:: event GetMasterOutputSwitch " << output_switch_;
+      break;
+    case MT_ALSA_Msg_PCMRateApplied:
+      /* W15: the kernel applied an armed in-place re-rate autonomously (the
+       * holding client closed the PCM). Payload {int32_t pcm_id, int32_t rate}.
+       * Hand it to the registered handler (session_manager) — which only
+       * signals its worker — then ack. */
+      if (req_size == sizeof(int32_t) * 2 && pcm_rate_applied_handler_) {
+        int32_t pcm_id = *reinterpret_cast<const int32_t*>(req);
+        uint32_t rate = *reinterpret_cast<const uint32_t*>(req + sizeof(int32_t));
+        BOOST_LOG_TRIVIAL(info) << "driver_manager:: event PCMRateApplied pcm_id="
+                                << pcm_id << " rate=" << rate;
+        pcm_rate_applied_handler_(static_cast<uint8_t>(pcm_id), rate);
+      }
+      resp_size = 0;
       break;
     default:
       BOOST_LOG_TRIVIAL(error) << "driver_manager:: unknown event "

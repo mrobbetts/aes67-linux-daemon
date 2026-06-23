@@ -20,6 +20,8 @@
 #ifndef _SESSION_MANAGER_HPP_
 #define _SESSION_MANAGER_HPP_
 
+#include <chrono>
+#include <condition_variable>
 #include <future>
 #include <list>
 #include <map>
@@ -182,6 +184,7 @@ class SessionManager {
    * (while running_/res_ are still alive). Idempotent with terminate(). */
   virtual ~SessionManager() {
     running_ = false;
+    wake_worker_();  // W15: unblock the worker's re-rate-event wait at once
     if (res_.valid())
       res_.wait();
   }
@@ -201,6 +204,7 @@ class SessionManager {
   bool terminate() {
     if (running_) {
       running_ = false;
+      wake_worker_();  // W15: unblock the worker's re-rate-event wait at once
       auto ret = res_.get();
       for (const auto& source : get_sources()) {
         remove_source(source.id);
@@ -344,11 +348,22 @@ class SessionManager {
   uint32_t rate_for_pcm_(uint8_t pcm_id) const;
   /* W15 in-place re-rate (rate_change_mode == "in-place"): update only the
    * daemon's model rate for a PCM (the kernel already re-keyed via SetPCMRate);
-   * no card recreate. process_pending_rerates_ runs on the worker thread and
-   * retries any re-rate the kernel ARMED (chip held open) until it applies or
-   * times out, then re-adds the deferred sink. Worker-thread only. */
+   * no card recreate. */
   void set_pcm_rate_model_(uint8_t pcm_id, uint32_t new_rate);
-  void process_pending_rerates_();
+  /* W15: on the worker, wait (briefly) for the kernel's PCMRateApplied K2U events
+   * (an ARMED re-rate that applied autonomously on the client's last close), then
+   * re-attach the deferred sink for each, and GC a pending whose event never
+   * arrives. The events are delivered into rerate_events_ by the driver's
+   * event-thread handler (signal-and-defer; it never touches `this`). */
+  void process_rerate_events_();
+  // W15: wake the worker if it's parked in process_rerate_events_'s cv wait.
+  void wake_worker_() {
+    {
+      std::lock_guard<std::mutex> lk(rerate_events_->mtx);
+      rerate_events_->stopping = true;
+    }
+    rerate_events_->cv.notify_all();
+  }
   /* W11: the PTP clock domain a pcm's stream rides — its owning card's domain.
    * Falls back to the daemon-wide configured domain for an unresolvable pcm
    * (validation rejects those), mirroring rate_for_pcm_. */
@@ -395,16 +410,32 @@ class SessionManager {
 
   /* W15 in-place re-rate: when SetPCMRate is ARMED (the kernel couldn't apply it
    * because a client still holds the PCM open), the re-rate + the sink re-add are
-   * parked here and retried on each worker tick until the client releases the
-   * device (or `tries` is exhausted). Touched only by the worker thread (no lock). */
+   * parked here. The kernel applies the re-rate autonomously on the client's last
+   * close and fires a PCMRateApplied event; the worker then re-attaches this sink
+   * (see process_rerate_events_). A pending whose event never arrives is GC'd after
+   * kRerateTimeout. Touched only by the worker thread (no lock). */
   struct PendingRerate {
     uint8_t pcm_id;
     uint32_t new_rate;
     StreamSink sink;  // re-added at the new rate once the re-rate applies
-    int tries{0};
+    std::chrono::steady_clock::time_point armed_at{
+        std::chrono::steady_clock::now()};
   };
-  std::list<PendingRerate> pending_rerates_;
-  static constexpr int kRerateMaxTries = 30;  // ~30 worker ticks (~30 s)
+  std::list<PendingRerate> pending_rerates_;   // worker-thread only
+  // GC bound: drop a pending whose apply event never arrives (client never
+  // released the device) after this long.
+  static constexpr std::chrono::seconds kRerateTimeout{30};
+  /* PCMRateApplied events. Lives in its OWN heap object so the driver's
+   * event-thread handler (which captures a shared_ptr copy) can safely outlive
+   * this SessionManager — it only ever touches this queue, never `this`. The
+   * worker waits on the cv, so the sink re-attach is immediate (no polling). */
+  struct RerateEvents {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::list<std::pair<uint8_t /*pcm_id*/, uint32_t /*rate*/>> applied;
+    bool stopping{false};
+  };
+  std::shared_ptr<RerateEvents> rerate_events_{std::make_shared<RerateEvents>()};
 
   /* current announced sources */
   std::map<uint32_t /* msg_id_hash */,
