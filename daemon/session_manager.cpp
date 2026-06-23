@@ -2174,6 +2174,57 @@ std::list<StreamSink> SessionManager::get_updated_sinks(
   return sinks_list;
 }
 
+std::list<StreamSink> SessionManager::get_rate_follow_sinks(
+    const std::list<RemoteSource>& sources_list) {
+  /* A source that re-rates without bumping its SDP o= version (e.g. the VAD)
+   * slips past get_updated_sinks' RFC-4566 monotonicity guard. For a
+   * rate_follows_source sink the version is irrelevant — the only question is
+   * whether the discovered source's rate differs from the pcm's. Two phases so
+   * the sinks_ -> cards_ lock order is never inverted: collect same-origin
+   * content-changed candidates under sinks_mutex_, then resolve the pcm rate
+   * (cards_mutex_) outside it. */
+  struct Candidate {
+    StreamSink sink;
+    uint32_t src_rate;
+  };
+  std::list<Candidate> candidates;
+  {
+    std::shared_lock sinks_lock(sinks_mutex_);
+    for (auto const& [id, info] : sinks_) {
+      StreamSink sink{get_sink_(id, info)};
+      for (auto const& source : sources_list) {
+        if (source.origin.session_id.empty() ||
+            !(sinks_[sink.id].origin == source.origin) ||
+            sink.sdp == source.sdp)
+          continue;
+        StreamInfo si;
+        if (!parse_sdp(source.sdp, si))
+          continue;
+        uint32_t src_rate = si.stream[0].m_ui32SamplingRate;
+        if (src_rate == 0)
+          continue;
+        sink.sdp = source.sdp;  // adopt the new SDP (mDNS/SAP carry the same body)
+        candidates.push_back({std::move(sink), src_rate});
+        break;
+      }
+    }
+  }
+  std::list<StreamSink> sinks_list;
+  for (auto& c : candidates) {
+    Pcm pcm;
+    if (pcm_for_id_(c.sink.pcm, pcm) && pcm.rate_follows_source &&
+        c.src_rate != pcm.sample_rate) {
+      BOOST_LOG_TRIVIAL(info)
+          << "session_manager:: sink " << std::to_string(c.sink.id)
+          << " rate-follow: source advertises " << c.src_rate << " Hz, pcm \""
+          << pcm.name << "\" at " << pcm.sample_rate
+          << " Hz (no o= version bump) — following";
+      sinks_list.emplace_back(std::move(c.sink));
+    }
+  }
+  return sinks_list;
+}
+
 void SessionManager::update_sinks() {
   if (config_->get_auto_sinks_update()) {
     uint32_t last_update = browser_->get_last_update_ts();
@@ -2182,6 +2233,17 @@ void SessionManager::update_sinks() {
       BOOST_LOG_TRIVIAL(debug) << "Updating sinks ...";
       std::list<RemoteSource> remote_sources = browser_->get_remote_sources();
       auto sinks_list = get_updated_sinks(remote_sources);
+      // W15: also follow sources that re-rated WITHOUT bumping their SDP o=
+      // version (get_updated_sinks ignores those by RFC-4566 monotonicity).
+      // Union by sink id — a version-bumped rate change already appears above.
+      {
+        std::set<uint8_t> seen;
+        for (auto const& s : sinks_list)
+          seen.insert(s.id);
+        for (auto& s : get_rate_follow_sinks(remote_sources))
+          if (seen.insert(s.id).second)
+            sinks_list.emplace_back(std::move(s));
+      }
       for (auto& sink : sinks_list) {
         // If the sink's pcm follows its source rate, re-rate the pcm to the new
         // source's rate BEFORE re-adding the sink, so the SDP-rate vs pcm-rate
