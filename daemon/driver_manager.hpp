@@ -81,6 +81,8 @@ class DriverManager : public DriverHandler {
    * DriverErrc::busy if the chip is held open (armed — the kernel applies it on
    * the client's last close; the caller should retry until it clears). */
   std::error_code set_pcm_rate(uint8_t pcm_id, uint32_t rate);
+  /* W28: retract an armed in-place re-rate (disarm the kernel latch); idempotent. */
+  std::error_code cancel_pcm_rate(uint8_t pcm_id);
   std::error_code get_number_of_inputs(uint8_t pcm_id, int32_t& inputs);
   std::error_code get_number_of_outputs(uint8_t pcm_id, int32_t& outputs);
 

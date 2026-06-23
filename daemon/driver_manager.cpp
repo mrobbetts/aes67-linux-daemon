@@ -63,7 +63,8 @@ static const std::vector<std::string> alsa_msg_str = {"Start",
                                                       "RemoveCard",
                                                       "GetPCMStatus",
                                                       "SetPCMRate",
-                                                      "PCMRateApplied"};
+                                                      "PCMRateApplied",
+                                                      "CancelPCMRate"};
 
 static const std::vector<std::string> ptp_status_str = {"unlocked", "locking",
                                                         "locked"};
@@ -374,6 +375,15 @@ std::error_code DriverManager::set_pcm_rate(uint8_t pcm_id, uint32_t rate) {
   int32_t buf[2] = { pcm_id, static_cast<int32_t>(rate) };
   this->send_command(MT_ALSA_Msg_SetPCMRate, sizeof(buf),
                      reinterpret_cast<const uint8_t*>(buf));
+  return retcode_;
+}
+
+std::error_code DriverManager::cancel_pcm_rate(uint8_t pcm_id) {
+  /* W28: retract an armed in-place re-rate (disarm the kernel latch). Payload
+   * {int32_t pcm_id}. Idempotent — a no-op when the chip isn't armed. */
+  int32_t buf = pcm_id;
+  this->send_command(MT_ALSA_Msg_CancelPCMRate, sizeof(buf),
+                     reinterpret_cast<const uint8_t*>(&buf));
   return retcode_;
 }
 
