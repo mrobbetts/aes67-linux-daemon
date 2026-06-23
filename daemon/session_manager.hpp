@@ -428,22 +428,20 @@ class SessionManager {
   mutable std::shared_mutex cards_mutex_;
 
   /* W15 in-place re-rate: when SetPCMRate is ARMED (the kernel couldn't apply it
-   * because a client still holds the PCM open), the re-rate + the sink re-add are
-   * parked here. The kernel applies the re-rate autonomously on the client's last
-   * close and fires a PCMRateApplied event; the worker then re-attaches this sink
-   * (see process_rerate_events_). A pending whose event never arrives is GC'd after
-   * kRerateTimeout. Touched only by the worker thread (no lock). */
+   * because a client still holds the PCM open), the sink re-add is parked here
+   * until the kernel applies the re-rate on the client's last close and fires a
+   * PCMRateApplied event; the worker then re-attaches this sink (see
+   * process_rerate_events_). A pending is valid for as long as the client holds
+   * the device — there is NO timeout: abandoning it would drop the sink re-attach
+   * AND make us discard the kernel's authoritative rate when the event arrives
+   * (that was the daemon<->kernel desync bug). Bounded to one entry per pcm by
+   * the dedup at arm time. Touched only by the worker thread (no lock). */
   struct PendingRerate {
     uint8_t pcm_id;
     uint32_t new_rate;
     StreamSink sink;  // re-added at the new rate once the re-rate applies
-    std::chrono::steady_clock::time_point armed_at{
-        std::chrono::steady_clock::now()};
   };
   std::list<PendingRerate> pending_rerates_;   // worker-thread only
-  // GC bound: drop a pending whose apply event never arrives (client never
-  // released the device) after this long.
-  static constexpr std::chrono::seconds kRerateTimeout{30};
   /* PCMRateApplied events. Lives in its OWN heap object so the driver's
    * event-thread handler (which captures a shared_ptr copy) can safely outlive
    * this SessionManager — it only ever touches this queue, never `this`. The
