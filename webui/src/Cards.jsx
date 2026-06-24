@@ -132,6 +132,26 @@ class Cards extends Component {
                           'TIC engine (pcm ' + pcmId + ')');
   }
 
+  // W28: the PCM's rate from kernel truth — the live rate (what the chip is keyed
+  // to now), a note if the configured/intent rate differs, and an amber
+  // armed->target marker when an in-place re-rate is latched but not yet applied.
+  pcmRate(p) {
+    const c = this.state.pcmClocks.find(x => x.pcm_id === p.pcm_id);
+    const live = (c && c.live_rate) ? c.live_rate : p.sample_rate;
+    const pending = c ? c.pending_rate : 0;
+    return (<>
+      {live} Hz
+      {live !== p.sample_rate &&
+        <span title='configured rate (intent); the chip is live at the rate shown'>
+          {' '}(cfg {p.sample_rate})</span>}
+      {pending > 0 &&
+        <span style={{color: '#d90'}}
+          title={'armed: in-place re-rate to ' + pending +
+                 ' Hz pending — applies when the client releases the device'}>
+          {' '}&rarr; {pending} Hz &#10227;</span>}
+    </>);
+  }
+
   componentDidMount() {
     this.fetchAll();
     this.liveInterval = setInterval(() => { this.refreshLive() }, 3000);
@@ -243,7 +263,7 @@ class Cards extends Component {
                           <div>
                             ▸ <b>{p.name}</b> &nbsp;{this.pcmLockDot(p.pcm_id)} &nbsp;
                             <font color='grey'>
-                              {p.sample_rate} Hz · {p.num_inputs} in / {p.num_outputs} out · hw:{card.name},{p.device_index}
+                              {this.pcmRate(p)} · {p.num_inputs} in / {p.num_outputs} out · hw:{card.name},{p.device_index}
                             </font>
                             &nbsp;&nbsp;
                             <span className='pointer-area' title='Edit PCM' onClick={() => this.onEditPcm(card.name, p)}>

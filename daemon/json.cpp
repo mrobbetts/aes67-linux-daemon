@@ -279,13 +279,16 @@ std::string ptp_domains_to_json(const std::map<uint8_t, PTPStatus>& by_domain) {
 }
 
 /* #22: per-PCM TIC-engine lock for the Cards per-PCM dots. */
-std::string pcm_clocks_to_json(const std::map<uint8_t, std::string>& by_pcm) {
+std::string pcm_clocks_to_json(const std::map<uint8_t, PcmRuntime>& by_pcm) {
   std::stringstream ss;
   ss << "{\n  \"pcms\": [";
   bool first = true;
-  for (const auto& [pcm_id, status] : by_pcm) {
+  for (const auto& [pcm_id, r] : by_pcm) {
     ss << (first ? "\n    " : ",\n    ") << "{ \"pcm_id\": " << unsigned(pcm_id)
-       << ", \"tic_status\": \"" << escape_json(status) << "\" }";
+       << ", \"tic_status\": \"" << escape_json(r.tic_status) << "\""
+       << ", \"live_rate\": " << r.live_rate          // W28: kernel-truth live rate
+       << ", \"pending_rate\": " << r.pending_rate     // armed target, 0 = not armed
+       << " }";
     first = false;
   }
   ss << (first ? "" : "\n  ") << "]\n}\n";
