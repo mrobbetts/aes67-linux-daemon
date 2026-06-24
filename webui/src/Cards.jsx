@@ -83,6 +83,22 @@ class Cards extends Component {
     this.fetchClocks();
   }
 
+  // lightweight live refresh (no isLoading flicker): the rate-bearing card/pcm
+  // state + the clock badges. Sources/sinks change on user action / the manual
+  // refresh button, so they stay on fetchAll. Runs on the poll interval so the
+  // Cards view reflects e.g. an auto-follow re-rate (and W28 live/armed rate)
+  // without a tab switch.
+  refreshLive() {
+    Promise.all([
+      RestAPI.getCards().then(r => r.json()),
+      RestAPI.getAllPcms().then(r => r.json())
+    ]).then(([cards, pcms]) => this.setState({
+      cards: cards.cards || [],
+      pcms: pcms.pcms || []
+    })).catch(() => {});
+    this.fetchClocks();
+  }
+
   // poll the live clock state for the badges: per-domain (card) + per-PCM (TIC).
   fetchClocks() {
     Promise.all([
@@ -118,11 +134,11 @@ class Cards extends Component {
 
   componentDidMount() {
     this.fetchAll();
-    this.ptpInterval = setInterval(() => { this.fetchClocks() }, 3000);
+    this.liveInterval = setInterval(() => { this.refreshLive() }, 3000);
   }
 
   componentWillUnmount() {
-    clearInterval(this.ptpInterval);
+    clearInterval(this.liveInterval);
   }
 
   applyEdit() {
