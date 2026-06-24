@@ -169,6 +169,15 @@ struct StreamInfo {
   SDPOrigin origin;
 };
 
+/* W28: per-PCM runtime truth for the Cards view — the TIC-engine lock plus the
+ * kernel-authoritative live + armed rate. live_rate is what the chip is keyed to
+ * right now; pending_rate is an armed in-place re-rate target (0 = not armed). */
+struct PcmRuntime {
+  std::string tic_status;
+  uint32_t live_rate{0};
+  uint32_t pending_rate{0};
+};
+
 class SessionManager {
  public:
   constexpr static uint8_t stream_id_max = 63;
@@ -296,8 +305,9 @@ class SessionManager {
   void get_ptp_status(PTPStatus& status) const;
   /* W11: per-domain status for the active domains (the Clocks view). */
   void get_ptp_status_by_domain(std::map<uint8_t, PTPStatus>& status) const;
-  /* #22: per-PCM TIC-engine lock (keyed by pcm_id) for the Cards per-PCM dots. */
-  void get_pcm_clocks(std::map<uint8_t, std::string>& status) const;
+  /* #22 + W28: per-PCM runtime (keyed by pcm_id) for the Cards view — TIC lock +
+   * kernel-truth live/armed rate. */
+  void get_pcm_clocks(std::map<uint8_t, PcmRuntime>& status) const;
 
   bool load_status();
   bool save_status() const;

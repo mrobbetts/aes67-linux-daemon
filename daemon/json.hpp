@@ -38,7 +38,7 @@ std::string sink_status_to_json(const SinkStreamStatus& status);
 std::string ptp_config_to_json(const PTPConfig& config);
 std::string ptp_status_to_json(const PTPStatus& status);
 std::string ptp_domains_to_json(const std::map<uint8_t, PTPStatus>& by_domain);
-std::string pcm_clocks_to_json(const std::map<uint8_t, std::string>& by_pcm);
+std::string pcm_clocks_to_json(const std::map<uint8_t, PcmRuntime>& by_pcm);
 std::string sources_to_json(const std::list<StreamSource>& sources);
 std::string sinks_to_json(const std::list<StreamSink>& sinks);
 std::string cards_to_json(const std::list<Card>& cards);

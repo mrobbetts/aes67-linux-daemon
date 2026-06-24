@@ -2093,9 +2093,18 @@ void SessionManager::get_ptp_status_by_domain(
 }
 
 void SessionManager::get_pcm_clocks(
-    std::map<uint8_t, std::string>& status) const {
+    std::map<uint8_t, PcmRuntime>& status) const {
   std::shared_lock ptp_lock(ptp_mutex_);
-  status = ptp_pcm_status_;
+  status.clear();
+  for (const auto& [pcm_id, tic] : ptp_pcm_status_) {
+    PcmRuntime r;
+    r.tic_status = tic;
+    if (pcm_id < pcm_id_max) {  // W28: kernel-truth live + armed rate (lock-free)
+      r.live_rate = pcm_live_rate_[pcm_id].load(std::memory_order_acquire);
+      r.pending_rate = pcm_pending_rate_[pcm_id].load(std::memory_order_acquire);
+    }
+    status.emplace(pcm_id, std::move(r));
+  }
 }
 
 size_t SessionManager::process_sap() {
