@@ -2286,9 +2286,11 @@ void SessionManager::update_sinks() {
       for (auto it = pending_rerates_.begin(); it != pending_rerates_.end();) {
         SDPOrigin o = sdp_get_origin(it->sink.sdp);
         uint32_t desired = 0;
+        std::string cur_sdp;  // the source's CURRENT SDP (reverted rate; maybe new SSRC)
         for (auto const& src : remote_sources)
           if (src.origin == o) {
             desired = sdp_media_rate(src.sdp);
+            cur_sdp = src.sdp;
             break;
           }
         uint32_t live = rate_for_pcm_(it->pcm_id);
@@ -2296,10 +2298,18 @@ void SessionManager::update_sinks() {
           driver_->cancel_pcm_rate(it->pcm_id);
           if (it->pcm_id < pcm_id_max)
             pcm_pending_rate_[it->pcm_id].store(0, std::memory_order_release);
+          /* The source restarted while we were armed (44100->48000->44100 is two
+           * stream restarts) so its SSRC has likely rolled, even though its rate is
+           * back to the live rate. The still-subscribed sink is locked to the old
+           * SSRC — re-add it with the current SDP to re-acquire the new stream. */
+          StreamSink sink = it->sink;
+          sink.sdp = cur_sdp;
+          add_sink(sink);
           BOOST_LOG_TRIVIAL(info)
               << "session_manager:: in-place re-rate of pcm_id "
               << (int)it->pcm_id << " cancelled — follow-source reverted to the "
-              << "live rate (" << live << " Hz) before the client released it";
+              << "live rate (" << live << " Hz); sink " << (int)sink.id
+              << " re-attached to re-acquire the restarted stream";
           it = pending_rerates_.erase(it);
         } else {
           ++it;
