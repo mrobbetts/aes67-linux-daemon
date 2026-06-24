@@ -2277,6 +2277,34 @@ void SessionManager::update_sinks() {
     if (last_update && last_sink_update_ != last_update) {
       BOOST_LOG_TRIVIAL(debug) << "Updating sinks ...";
       std::list<RemoteSource> remote_sources = browser_->get_remote_sources();
+      /* W28: retract a stale in-place re-rate. If a pcm we armed is now already
+       * at the rate its follow-source advertises (the source flapped back to the
+       * live rate before the client released the device), cancel the latch so the
+       * stale target can't fire on the next close. Match the pending's source by
+       * SDP origin (version-blind) so a reverted source — same origin, old rate —
+       * is recognised; compare against the kernel-truth live rate. */
+      for (auto it = pending_rerates_.begin(); it != pending_rerates_.end();) {
+        SDPOrigin o = sdp_get_origin(it->sink.sdp);
+        uint32_t desired = 0;
+        for (auto const& src : remote_sources)
+          if (src.origin == o) {
+            desired = sdp_media_rate(src.sdp);
+            break;
+          }
+        uint32_t live = rate_for_pcm_(it->pcm_id);
+        if (desired != 0 && desired == live && it->new_rate != live) {
+          driver_->cancel_pcm_rate(it->pcm_id);
+          if (it->pcm_id < pcm_id_max)
+            pcm_pending_rate_[it->pcm_id].store(0, std::memory_order_release);
+          BOOST_LOG_TRIVIAL(info)
+              << "session_manager:: in-place re-rate of pcm_id "
+              << (int)it->pcm_id << " cancelled — follow-source reverted to the "
+              << "live rate (" << live << " Hz) before the client released it";
+          it = pending_rerates_.erase(it);
+        } else {
+          ++it;
+        }
+      }
       auto sinks_list = get_updated_sinks(remote_sources);
       // W15: also follow sources that re-rated WITHOUT bumping their SDP o=
       // version (get_updated_sinks ignores those by RFC-4566 monotonicity).
@@ -2309,23 +2337,24 @@ void SessionManager::update_sinks() {
             Card card;
             bool in_place = !get_card_by_name(pcm.card, card) &&
                             card.rate_change_mode == "in-place";
-            BOOST_LOG_TRIVIAL(info)
-                << "session_manager:: auto-follow: re-rating pcm \"" << pcm.name
-                << "\" (card \"" << pcm.card << "\", "
-                << (in_place ? "in-place" : "recreate") << ") " << pcm.sample_rate
-                << " -> " << new_rate << " to match source of sink "
-                << std::to_string(sink.id);
-            if (in_place) {
-              // Dedup: if the kernel already holds this exact re-rate latched for
-              // this pcm (the client still hasn't released it), DON'T re-arm — that
-              // was an every-browse-tick storm. A changed target replaces the stale
-              // record so we re-arm with the new rate.
-              auto pend = std::find_if(
-                  pending_rerates_.begin(), pending_rerates_.end(),
-                  [&](const PendingRerate& p) { return p.pcm_id == pcm.pcm_id; });
-              if (pend != pending_rerates_.end() && pend->new_rate == new_rate) {
-                deferred = true;  // already armed for new_rate; await the apply event
-              } else {
+            // If the kernel already holds this exact re-rate latched (the client
+            // still hasn't released the device), just wait for the apply event —
+            // don't re-arm or re-log every browse tick (that was a storm + spam).
+            auto pend = std::find_if(
+                pending_rerates_.begin(), pending_rerates_.end(),
+                [&](const PendingRerate& p) { return p.pcm_id == pcm.pcm_id; });
+            bool already_armed = in_place && pend != pending_rerates_.end() &&
+                                 pend->new_rate == new_rate;
+            if (already_armed) {
+              deferred = true;
+            } else {
+              BOOST_LOG_TRIVIAL(info)
+                  << "session_manager:: auto-follow: re-rating pcm \"" << pcm.name
+                  << "\" (card \"" << pcm.card << "\", "
+                  << (in_place ? "in-place" : "recreate") << ") " << pcm.sample_rate
+                  << " -> " << new_rate << " to match source of sink "
+                  << std::to_string(sink.id);
+              if (in_place) {
                 if (pend != pending_rerates_.end())
                   pending_rerates_.erase(pend);  // re-targeting: drop the stale latch
                 // Record the pending BEFORE arming, so the kernel's apply event
@@ -2340,6 +2369,9 @@ void SessionManager::update_sinks() {
                   pending_rerates_.pop_back();
                 } else if (ec == DriverErrc::busy) {
                   deferred = true;  // armed; the apply event will re-attach the sink
+                  if (pcm.pcm_id < pcm_id_max)
+                    pcm_pending_rate_[pcm.pcm_id].store(
+                        new_rate, std::memory_order_release);  // reflect for the UI
                   BOOST_LOG_TRIVIAL(info)
                       << "session_manager:: in-place re-rate of pcm \"" << pcm.name
                       << "\" armed (client holds the device); will re-attach on the "
@@ -2350,15 +2382,15 @@ void SessionManager::update_sinks() {
                       << "session_manager:: in-place re-rate of pcm \"" << pcm.name
                       << "\" failed: " << ec.message();
                 }
-              }
-            } else {
-              Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
-              np.sample_rate = new_rate;
-              np.name = "";  // update_pcm: empty name => keep current name
-              if (auto ec = update_pcm(pcm.card, pcm.name, np)) {
-                BOOST_LOG_TRIVIAL(warning)
-                    << "session_manager:: auto-follow re-rate of pcm \"" << pcm.name
-                    << "\" failed: " << ec.message();
+              } else {
+                Pcm np = pcm;  // preserves card/num_inputs/.../rate_follows_source
+                np.sample_rate = new_rate;
+                np.name = "";  // update_pcm: empty name => keep current name
+                if (auto ec = update_pcm(pcm.card, pcm.name, np)) {
+                  BOOST_LOG_TRIVIAL(warning)
+                      << "session_manager:: auto-follow re-rate of pcm \"" << pcm.name
+                      << "\" failed: " << ec.message();
+                }
               }
             }
           }
@@ -2381,8 +2413,10 @@ void SessionManager::set_pcm_rate_model_(uint8_t pcm_id, uint32_t new_rate) {
    * the prompt; the poll is the backstop). Lock-free, so do it outside the
    * cards lock. The configured/intent rate below converges to it: an applied
    * re-rate is one the daemon commanded/followed, so intent == truth here. */
-  if (pcm_id < pcm_id_max)
+  if (pcm_id < pcm_id_max) {
     pcm_live_rate_[pcm_id].store(new_rate, std::memory_order_release);
+    pcm_pending_rate_[pcm_id].store(0, std::memory_order_release);  // latch cleared
+  }
   std::unique_lock cards_lock(cards_mutex_);
   auto it = pcms_.find(pcm_id);
   if (it != pcms_.end()) {
