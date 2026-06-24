@@ -19,10 +19,7 @@
 
 
 import React from 'react'
-// HashRouter (not BrowserRouter): the daemon serves the SPA as static files with
-// no server-side fallback to index.html, so a browser refresh on a sub-route like
-// /Cards 404s to a blank page. Hash routes (/#/Cards) are always served from /.
-import { Route, HashRouter as Router, Switch } from 'react-router-dom'
+import { Route, BrowserRouter as Router, Switch } from 'react-router-dom'
 import { render } from "react-dom";
 import { toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';

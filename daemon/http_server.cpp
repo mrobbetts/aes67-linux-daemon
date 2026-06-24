@@ -87,7 +87,12 @@ bool HttpServer::init() {
 
   svr_.set_mount_point("/", config_->get_http_base_dir().c_str());
 
-  svr_.Get("(/|/Config|/PTP|/Sources|/Sinks|/Browser)",
+  /* SPA fallback: the WebUI is a single index.html + JS bundle; each tab is a
+   * client-side route, not a file on disk. So a browser refresh on a tab path
+   * must be served index.html (the router then renders the tab). Keep this list
+   * in step with App.jsx's <Route> paths — a tab missing here 404s to a blank
+   * page on refresh (which is exactly what happened to /Cards). */
+  svr_.Get("(/|/Config|/PTP|/Cards|/Sources|/Sinks|/Browser)",
            [&](const Request& req, Response& res) {
              std::ifstream file(config_->get_http_base_dir() + "/index.html");
              std::stringstream buffer;
