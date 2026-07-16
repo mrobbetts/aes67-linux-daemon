@@ -151,6 +151,18 @@ struct PTPStatus {
   std::string status;
   std::string gmid;
   int32_t jitter{0};
+  /* W16 slice 3: the elected GM's Announce properties (verbatim from the wire)
+   * plus the kernel servo's estimate of the GM's rate offset vs the local
+   * reference (ppb, negative = GM slow; meaningful once PTP-locked). Surfaced
+   * for display and judgment — never gated on. */
+  int64_t gm_rate_ppb{0};
+  uint8_t gm_priority1{0};
+  uint8_t gm_clock_class{0};
+  uint8_t gm_clock_accuracy{0};
+  uint16_t gm_offset_scaled_log_variance{0};
+  uint8_t gm_priority2{0};
+  uint16_t gm_steps_removed{0};
+  uint8_t gm_time_source{0};
 };
 
 struct StreamInfo {
@@ -176,6 +188,11 @@ struct PcmRuntime {
   std::string tic_status;
   uint32_t live_rate{0};
   uint32_t pending_rate{0};
+  /* W16 slice 3: the kernel's canonical media-clock state WITH the reason for
+   * unlockedness — "stopped" | "no-signal" | "acquiring" | "locked" |
+   * "saturated" (GM beyond steering range, untrackable). Supersedes tic_status
+   * (kept for compat), which cannot distinguish acquiring from saturated. */
+  std::string clock_state;
 };
 
 class SessionManager {
@@ -485,8 +502,14 @@ class SessionManager {
    * ptp_mutex_. */
   std::map<uint8_t, PTPStatus> ptp_status_by_domain_;
   /* #22: per-PCM TIC-engine lock (keyed by pcm_id), mirrored from the kernel by
-   * the worker for the Cards per-PCM dots. Guarded by ptp_mutex_. */
-  std::map<uint8_t, std::string> ptp_pcm_status_;
+   * the worker for the Cards per-PCM dots. W16 slice 3: the mirror carries both
+   * the legacy tic_status and the canonical clock_state (the reason-bearing
+   * enum, stringified). Guarded by ptp_mutex_. */
+  struct PcmClockMirror {
+    std::string tic_status;
+    std::string clock_state;
+  };
+  std::map<uint8_t, PcmClockMirror> ptp_pcm_status_;
   mutable std::shared_mutex ptp_mutex_;
   /* W28 (intent-in/truth-out): the kernel is the source of truth for the LIVE
    * chip rate and the ARMED re-rate target. Mirrored lock-free from

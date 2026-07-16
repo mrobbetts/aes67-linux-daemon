@@ -2096,9 +2096,10 @@ void SessionManager::get_pcm_clocks(
     std::map<uint8_t, PcmRuntime>& status) const {
   std::shared_lock ptp_lock(ptp_mutex_);
   status.clear();
-  for (const auto& [pcm_id, tic] : ptp_pcm_status_) {
+  for (const auto& [pcm_id, mirror] : ptp_pcm_status_) {
     PcmRuntime r;
-    r.tic_status = tic;
+    r.tic_status = mirror.tic_status;
+    r.clock_state = mirror.clock_state;  // W16 slice 3: the reason-bearing state
     if (pcm_id < pcm_id_max) {  // W28: kernel-truth live + armed rate (lock-free)
       r.live_rate = pcm_live_rate_[pcm_id].load(std::memory_order_acquire);
       r.pending_rate = pcm_pending_rate_[pcm_id].load(std::memory_order_acquire);
@@ -2562,8 +2563,31 @@ PTPStatus to_ptp_status(const TPTPStatus& ds) {
   const uint8_t* g = reinterpret_cast<const uint8_t*>(&ds.ui64GMID);
   snprintf(id, sizeof(id), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", g[0],
            g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
-  return PTPStatus{ptp_lock_status_str(ds.nPTPLockStatus), id,
-                   ds.i32ClockJitter};
+  return PTPStatus{ptp_lock_status_str(ds.nPTPLockStatus),
+                   id,
+                   ds.i32ClockJitter,
+                   /* W16 slice 3: GM properties + rate estimate, verbatim. */
+                   ds.i64GMRateOffsetPPB,
+                   ds.ui8GMPriority1,
+                   ds.ui8GMClockClass,
+                   ds.ui8GMClockAccuracy,
+                   ds.ui16GMOffsetScaledLogVariance,
+                   ds.ui8GMPriority2,
+                   ds.ui16GMStepsRemoved,
+                   ds.ui8GMTimeSource};
+}
+
+/* W16 slice 3 — pure: the kernel's canonical EClockState -> its wire string.
+ * The one vocabulary the API and UI speak; values carried verbatim. */
+const char* clock_state_str(int s) {
+  switch (s) {
+    case CLK_NO_SIGNAL: return "no-signal";
+    case CLK_ACQUIRING: return "acquiring";
+    case CLK_LOCKED:    return "locked";
+    case CLK_SATURATED: return "saturated";
+    case CLK_STOPPED:
+    default:            return "stopped";
+  }
 }
 }  // namespace
 
@@ -2659,12 +2683,14 @@ bool SessionManager::worker() {
         }
 
         /* #22: mirror each PCM's TIC-engine lock (keyed by pcm_id) for the Cards
-         * per-PCM dots — poll into an immutable map, then assign once. */
-        std::map<uint8_t, std::string> pcm_status;
+         * per-PCM dots — poll into an immutable map, then assign once. W16
+         * slice 3: also the canonical clock_state (the reason-bearing enum). */
+        std::map<uint8_t, PcmClockMirror> pcm_status;
         for (const auto& pcm : get_pcms()) {
           TPCMStatus ps;
           if (!driver_->get_pcm_status(pcm.pcm_id, ps)) {
-            pcm_status[pcm.pcm_id] = ptp_lock_status_str(ps.nTICLockStatus);
+            pcm_status[pcm.pcm_id] = {ptp_lock_status_str(ps.nTICLockStatus),
+                                      clock_state_str(ps.clock_state)};
             /* W28: refresh the kernel-truth live + armed rate mirror. This is the
              * reconcile backstop — even if a PCMRateApplied event is dropped, the
              * mirror re-syncs to kernel truth on the next poll. */
