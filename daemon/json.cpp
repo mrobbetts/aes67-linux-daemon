@@ -253,11 +253,28 @@ std::string ptp_config_to_json(const PTPConfig& ptp_config) {
   return ss.str();
 }
 
+/* W16 slice 3 — pure: the GM property block shared by the single-status and
+ * per-domain PTP emitters (one shape, one place). Values verbatim from the
+ * kernel's Announce mirror + the servo's GM rate-offset estimate (ppb,
+ * negative = GM slow). */
+static std::string gm_block_json(const PTPStatus& status) {
+  std::stringstream ss;
+  ss << ", \"gm_rate_ppb\": " << status.gm_rate_ppb
+     << ", \"gm_clock_class\": " << unsigned(status.gm_clock_class)
+     << ", \"gm_clock_accuracy\": " << unsigned(status.gm_clock_accuracy)
+     << ", \"gm_log_variance\": " << status.gm_offset_scaled_log_variance
+     << ", \"gm_priority1\": " << unsigned(status.gm_priority1)
+     << ", \"gm_priority2\": " << unsigned(status.gm_priority2)
+     << ", \"gm_steps_removed\": " << status.gm_steps_removed
+     << ", \"gm_time_source\": " << unsigned(status.gm_time_source);
+  return ss.str();
+}
+
 std::string ptp_status_to_json(const PTPStatus& status) {
   std::stringstream ss;
   ss << "{" << " \"status\": \"" << escape_json(status.status) << "\""
      << ", \"gmid\": \"" << escape_json(status.gmid) << "\""
-     << ", \"jitter\": " << status.jitter << " }\n";
+     << ", \"jitter\": " << status.jitter << gm_block_json(status) << " }\n";
   return ss.str();
 }
 
@@ -271,7 +288,7 @@ std::string ptp_domains_to_json(const std::map<uint8_t, PTPStatus>& by_domain) {
     ss << (first ? "\n    " : ",\n    ") << "{ \"domain\": " << unsigned(domain)
        << ", \"status\": \"" << escape_json(status.status) << "\""
        << ", \"gmid\": \"" << escape_json(status.gmid) << "\""
-       << ", \"jitter\": " << status.jitter << " }";
+       << ", \"jitter\": " << status.jitter << gm_block_json(status) << " }";
     first = false;
   }
   ss << (first ? "" : "\n  ") << "]\n}\n";
@@ -286,6 +303,7 @@ std::string pcm_clocks_to_json(const std::map<uint8_t, PcmRuntime>& by_pcm) {
   for (const auto& [pcm_id, r] : by_pcm) {
     ss << (first ? "\n    " : ",\n    ") << "{ \"pcm_id\": " << unsigned(pcm_id)
        << ", \"tic_status\": \"" << escape_json(r.tic_status) << "\""
+       << ", \"clock_state\": \"" << escape_json(r.clock_state) << "\""  // W16 slice 3
        << ", \"live_rate\": " << r.live_rate          // W28: kernel-truth live rate
        << ", \"pending_rate\": " << r.pending_rate     // armed target, 0 = not armed
        << " }";

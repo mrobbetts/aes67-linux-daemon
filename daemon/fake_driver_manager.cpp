@@ -106,6 +106,7 @@ std::error_code DriverManager::get_ptp_config(TPTPConfig& config) {
 
 std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status) {
   (void)domain;
+  status = TPTPStatus{};  /* W16 slice 3: zero the appended GM property block */
   status.nPTPLockStatus = PTPLS_UNLOCKED;
   status.ui64GMID[0] = 0xABABABABABABABAB;
   status.ui64GMID[1] = 0x0;
@@ -120,7 +121,9 @@ std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status
 std::error_code DriverManager::get_pcm_status(int32_t pcm_id,
                                               TPCMStatus& status) {
   (void)pcm_id;
+  status = TPCMStatus{};  /* W16 slice 3: zero live/pending rate + clock_state */
   status.nTICLockStatus = PTPLS_UNLOCKED;
+  status.clock_state = CLK_NO_SIGNAL;
   return std::error_code{};
 }
 
