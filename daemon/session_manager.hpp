@@ -151,6 +151,11 @@ struct PTPStatus {
   std::string status;
   std::string gmid;
   int32_t jitter{0};
+  /* W16 slice 3b: the DOMAIN-level clock state — clock-source health is a
+   * domain fact (the GM + servo), one truth for every PCM on it: "no-signal" |
+   * "acquiring" | "locked" | "saturated". This is what UIs colour by; the
+   * legacy composite `status` stays for compat/observers. */
+  std::string clock_state;
   /* W16 slice 3: the elected GM's Announce properties (verbatim from the wire)
    * plus the kernel servo's estimate of the GM's rate offset vs the local
    * reference (ppb, negative = GM slow; meaningful once PTP-locked). Surfaced
@@ -188,11 +193,17 @@ struct PcmRuntime {
   std::string tic_status;
   uint32_t live_rate{0};
   uint32_t pending_rate{0};
-  /* W16 slice 3: the kernel's canonical media-clock state WITH the reason for
+  /* W16 slice 3: the engine's media-clock state WITH the reason for
    * unlockedness — "stopped" | "no-signal" | "acquiring" | "locked" |
-   * "saturated" (GM beyond steering range, untrackable). Supersedes tic_status
-   * (kept for compat), which cannot distinguish acquiring from saturated. */
+   * "saturated". Slice 3b: detail only (tooltips) — the DOMAIN composite in
+   * PTPStatus is the clock-source truth UIs colour by. */
   std::string clock_state;
+  /* W16 slice 3b: engine-local EXECUTION health — is this PCM's tick engine
+   * meeting its own schedule? Meaningful regardless of clock state (a
+   * free-wheeling engine still ticks and services clients, W17). ticking ⇔
+   * us_since_last_tick ≲ a few tick_period_us. Both 0 when stopped. */
+  uint32_t tick_period_us{0};
+  uint32_t us_since_last_tick{0};
 };
 
 class SessionManager {
@@ -508,6 +519,8 @@ class SessionManager {
   struct PcmClockMirror {
     std::string tic_status;
     std::string clock_state;
+    uint32_t tick_period_us{0};       /* W16 3b: engine execution health */
+    uint32_t us_since_last_tick{0};
   };
   std::map<uint8_t, PcmClockMirror> ptp_pcm_status_;
   mutable std::shared_mutex ptp_mutex_;

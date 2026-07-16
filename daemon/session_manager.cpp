@@ -2100,6 +2100,8 @@ void SessionManager::get_pcm_clocks(
     PcmRuntime r;
     r.tic_status = mirror.tic_status;
     r.clock_state = mirror.clock_state;  // W16 slice 3: the reason-bearing state
+    r.tick_period_us = mirror.tick_period_us;        // 3b: execution health
+    r.us_since_last_tick = mirror.us_since_last_tick;
     if (pcm_id < pcm_id_max) {  // W28: kernel-truth live + armed rate (lock-free)
       r.live_rate = pcm_live_rate_[pcm_id].load(std::memory_order_acquire);
       r.pending_rate = pcm_pending_rate_[pcm_id].load(std::memory_order_acquire);
@@ -2558,25 +2560,6 @@ const char* ptp_lock_status_str(int s) {
   }
 }
 
-PTPStatus to_ptp_status(const TPTPStatus& ds) {
-  char id[24];
-  const uint8_t* g = reinterpret_cast<const uint8_t*>(&ds.ui64GMID);
-  snprintf(id, sizeof(id), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", g[0],
-           g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
-  return PTPStatus{ptp_lock_status_str(ds.nPTPLockStatus),
-                   id,
-                   ds.i32ClockJitter,
-                   /* W16 slice 3: GM properties + rate estimate, verbatim. */
-                   ds.i64GMRateOffsetPPB,
-                   ds.ui8GMPriority1,
-                   ds.ui8GMClockClass,
-                   ds.ui8GMClockAccuracy,
-                   ds.ui16GMOffsetScaledLogVariance,
-                   ds.ui8GMPriority2,
-                   ds.ui16GMStepsRemoved,
-                   ds.ui8GMTimeSource};
-}
-
 /* W16 slice 3 — pure: the kernel's canonical EClockState -> its wire string.
  * The one vocabulary the API and UI speak; values carried verbatim. */
 const char* clock_state_str(int s) {
@@ -2588,6 +2571,27 @@ const char* clock_state_str(int s) {
     case CLK_STOPPED:
     default:            return "stopped";
   }
+}
+
+PTPStatus to_ptp_status(const TPTPStatus& ds) {
+  char id[24];
+  const uint8_t* g = reinterpret_cast<const uint8_t*>(&ds.ui64GMID);
+  snprintf(id, sizeof(id), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", g[0],
+           g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+  return PTPStatus{ptp_lock_status_str(ds.nPTPLockStatus),
+                   id,
+                   ds.i32ClockJitter,
+                   /* W16 slice 3b: the domain-level clock state. */
+                   clock_state_str(ds.clock_state),
+                   /* W16 slice 3: GM properties + rate estimate, verbatim. */
+                   ds.i64GMRateOffsetPPB,
+                   ds.ui8GMPriority1,
+                   ds.ui8GMClockClass,
+                   ds.ui8GMClockAccuracy,
+                   ds.ui16GMOffsetScaledLogVariance,
+                   ds.ui8GMPriority2,
+                   ds.ui16GMStepsRemoved,
+                   ds.ui8GMTimeSource};
 }
 }  // namespace
 
@@ -2690,7 +2694,9 @@ bool SessionManager::worker() {
           TPCMStatus ps;
           if (!driver_->get_pcm_status(pcm.pcm_id, ps)) {
             pcm_status[pcm.pcm_id] = {ptp_lock_status_str(ps.nTICLockStatus),
-                                      clock_state_str(ps.clock_state)};
+                                      clock_state_str(ps.clock_state),
+                                      ps.tick_period_us,
+                                      ps.us_since_last_tick};
             /* W28: refresh the kernel-truth live + armed rate mirror. This is the
              * reconcile backstop — even if a PCMRateApplied event is dropped, the
              * mirror re-syncs to kernel truth on the next poll. */

@@ -84,37 +84,90 @@ class PTPConfig extends Component {
   }
 }
 
+/* W16 slice 5 — pure formatters for the GM's Announce properties. Well-known
+ * values get their IEEE-1588 meaning; anything else shows the raw number. */
+const fmtPpm = (ppb) => {
+  const ppm = ppb / 1000;
+  return (ppm >= 0 ? '+' : '') + ppm.toFixed(1) + ' ppm vs local';
+};
+const fmtClockClass = (c) => {
+  const known = {6: 'primary reference (GNSS-sync)', 7: 'primary, holdover',
+                 13: 'application-specific', 14: 'application, holdover',
+                 52: 'degraded A', 58: 'degraded B',
+                 248: 'default (free-running)', 255: 'slave-only'};
+  return known[c] ? c + ' — ' + known[c] : String(c);
+};
+const fmtClockAccuracy = (a) => {
+  const known = {0x20: '25 ns', 0x21: '100 ns', 0x22: '250 ns', 0x23: '1 µs',
+                 0x24: '2.5 µs', 0x25: '10 µs', 0x26: '25 µs', 0x27: '100 µs',
+                 0x28: '250 µs', 0x29: '1 ms', 0x2A: '2.5 ms', 0x2B: '10 ms',
+                 0x2C: '25 ms', 0x2D: '100 ms', 0x2E: '250 ms', 0x2F: '1 s',
+                 0x30: '10 s', 0x31: '> 10 s', 0xFE: 'unknown'};
+  const hex = '0x' + a.toString(16).toUpperCase().padStart(2, '0');
+  return known[a] ? 'within ' + known[a] + ' (' + hex + ')' : hex;
+};
+const fmtTimeSource = (t) => {
+  const known = {0x10: 'atomic clock', 0x20: 'GNSS', 0x30: 'terrestrial radio',
+                 0x40: 'PTP', 0x50: 'NTP', 0x60: 'hand-set', 0x90: 'other',
+                 0xA0: 'internal oscillator'};
+  const hex = '0x' + t.toString(16).toUpperCase().padStart(2, '0');
+  return known[t] ? known[t] + ' (' + hex + ')' : hex;
+};
+
 class PTPDomainStatus extends Component {
   static propTypes = {
-    domain: PropTypes.number.isRequired,
-    status: PropTypes.string.isRequired,
-    gmid: PropTypes.string.isRequired,
-    jitter: PropTypes.number.isRequired,
+    info: PropTypes.object.isRequired,
   };
 
   render() {
-    const color = this.props.status === 'locked' ? '#2a0'
-                : this.props.status === 'locking' ? '#d90' : '#c00';
-    // when unlocked there is no valid reference clock, so neither the
-    // grandmaster id nor the recovery jitter is meaningful — blank both.
-    const meaningful = this.props.status !== 'unlocked';
-    const gmid = meaningful ? this.props.gmid : '—';
-    const jitter = meaningful ? this.props.jitter : '—';
+    const d = this.props.info;
+    // W16 slice 5: the header is the DOMAIN's clock-source health — the
+    // composite clock_state (an untrackable GM shows "saturated" in red even
+    // though the PTP servo itself tracks it fine; the layered truth is in the
+    // "PTP servo" row below). Legacy status is the fallback for old daemons.
+    const state = d.clock_state || d.status;
+    const color = state === 'locked' ? '#2a0'
+                : (state === 'acquiring' || state === 'locking') ? '#d90' : '#c00';
+    // without a PTP signal there is no reference clock at all — neither the
+    // grandmaster identity nor any of its properties is meaningful; blank all.
+    // (saturated is different: the GM is present and its properties are exactly
+    // what you want to see.)
+    const meaningful = state !== 'no-signal' && state !== 'unlocked';
+    const val = (v) => meaningful ? v : '—';
+    const row = (label, value, tip) => (
+      <tr>
+        <th align="left"> <label title={tip}>{label}</label> </th>
+        <th align="left"> <input size="30" value={value} disabled/> </th>
+      </tr>);
     return (
      <div style={{marginBottom: '1em'}}>
-      <h3>Domain {this.props.domain}&nbsp;&nbsp;
+      <h3>Domain {d.domain}&nbsp;&nbsp;
         <span style={{color: color}}>&#9679;</span>&nbsp;
-        <span style={{color: color}}>{this.props.status}</span>
+        <span style={{color: color}}>{state}</span>
       </h3>
       <table><tbody>
-        <tr>
-          <th align="left"> <label>GMID</label> </th>
-          <th align="left"> <input size="30" value={gmid} disabled/> </th>
-        </tr>
-        <tr>
-          <th align="left"> <label>Clock jitter</label> </th>
-          <th align="left"> <input value={jitter} disabled/> </th>
-        </tr>
+        {row('PTP servo', meaningful ? 'locked' : 'unlocked',
+             'the PTP time servo itself — it can track a GM (offset estimation) even when the media servo cannot (rate beyond steering range = saturated)')}
+        {row('GMID', val(d.gmid))}
+        {row('Clock jitter', val(parseInt(d.jitter, 10)))}
+        {/* W16 slice 5: the GM's Announce properties + our measured rate offset.
+          * Displayed, never gated on — a poor clockClass is information, not a
+          * veto (the freewheel taught us the announce can say one thing and the
+          * rate another; the ppm row is what WE measure). */}
+        {row('GM rate offset', val(fmtPpm(d.gm_rate_ppb || 0)),
+             'measured by our servo: the GM’s rate vs our local reference — beyond ~±370 ppm the media servo saturates (untrackable)')}
+        {row('Clock class', val(fmtClockClass(d.gm_clock_class || 0)),
+             'announced clockClass — the GM’s own claim about its reference')}
+        {row('Clock accuracy', val(fmtClockAccuracy(d.gm_clock_accuracy || 0)),
+             'announced clockAccuracy')}
+        {row('Log variance', val(d.gm_log_variance),
+             'announced offsetScaledLogVariance (0xFFFF = not computed)')}
+        {row('Priority 1 / 2', val((d.gm_priority1 ?? '—') + ' / ' + (d.gm_priority2 ?? '—')),
+             'BMCA priorities from the announce')}
+        {row('Steps removed', val(d.gm_steps_removed),
+             'boundary-clock hops between the GM and us')}
+        {row('Time source', val(fmtTimeSource(d.gm_time_source || 0)),
+             'announced timeSource')}
       </tbody></table>
      </div>
     )
@@ -179,8 +232,7 @@ class PTP extends Component {
         { this.state.domains.length === 0 ?
             <p>No active PTP domains &mdash; they appear here as cards use them.</p> :
             this.state.domains.map(d =>
-              <PTPDomainStatus key={d.domain} domain={d.domain}
-                status={d.status} gmid={d.gmid} jitter={parseInt(d.jitter, 10)}/>) }
+              <PTPDomainStatus key={d.domain} info={d}/>) }
       </div>
     )
   }
