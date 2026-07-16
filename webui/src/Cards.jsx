@@ -110,26 +110,60 @@ class Cards extends Component {
     })).catch(() => {});
   }
 
-  // a coloured dot for a clock status string (green locked / amber locking /
-  // red unlocked or unknown).
-  statusDot(status, title) {
-    const color = status === 'locked' ? '#2a0'
-                : status === 'locking' ? '#d90' : '#c00';
-    return (<span title={title + ': ' + status}
-              style={{color: color}}>&#9679;</span>);
+  // W16: the domain's GM rate offset vs our local reference, as signed ppm text.
+  gmPpm(domain) {
+    const d = this.state.ptpDomains.find(x => x.domain === domain);
+    if (!d || d.gm_rate_ppb === undefined) return null;
+    const ppm = d.gm_rate_ppb / 1000;
+    return (ppm >= 0 ? '+' : '') + ppm.toFixed(1) + ' ppm';
   }
 
-  // a card's PTP domain lock; pairs with the full Clocks view in the PTP tab.
+  // W16 slice 5: the card's dot = the DOMAIN's clock-source health (the GM +
+  // servo — one truth for every PCM on the domain). Dot only; the tooltip
+  // carries the reason (+ the measured GM rate when saturated); the PTP tab
+  // has the full story. clock_state supersedes the legacy composite status.
   lockDot(domain) {
     const d = this.state.ptpDomains.find(x => x.domain === domain);
-    return this.statusDot(d ? d.status : 'unlocked', 'PTP domain ' + domain);
+    const state = d ? (d.clock_state || d.status) : 'no-signal';
+    const meta = {
+      'locked':    {color: '#2a0', tip: 'locked — tracking the GM'},
+      'acquiring': {color: '#d90', tip: 'media servo converging on the GM'},
+      'locking':   {color: '#d90', tip: 'media servo converging on the GM'},
+      'saturated': {color: '#c00', tip: 'GM rate beyond the servo’s steering ' +
+                    'range — untrackable; free-wheeling at nominal' +
+                    (this.gmPpm(domain) ? ' (GM ' + this.gmPpm(domain) + ')' : '') +
+                    ' — see the PTP tab'},
+      'no-signal': {color: '#c00', tip: 'no usable PTP signal'},
+      'unlocked':  {color: '#c00', tip: 'no usable PTP signal'},
+    }[state] || {color: '#c00', tip: state};
+    return (<span title={'domain ' + domain + ' clock: ' + meta.tip}
+              style={{color: meta.color}}>&#9679;</span>);
   }
 
-  // a PCM's TIC engine lock — is this media clock actually tracking?
+  // W16 slice 5: the PCM's dot = the ENGINE's execution health — is its tick
+  // meeting its own schedule? True even when free-wheeling (the domain dot
+  // above carries clock-source health). green = ticking, red = started but
+  // stalled, grey = stopped. Tooltip mentions the engine's clock state as a
+  // pointer to the PTP tab, never as this dot's colour.
   pcmLockDot(pcmId) {
-    const p = this.state.pcmClocks.find(x => x.pcm_id === pcmId);
-    return this.statusDot(p ? p.tic_status : 'unlocked',
-                          'TIC engine (pcm ' + pcmId + ')');
+    const c = this.state.pcmClocks.find(x => x.pcm_id === pcmId);
+    if (!c || (c.clock_state === 'stopped' || !c.tick_period_us)) {
+      return (<span title={'pcm ' + pcmId + ' engine: not running'}
+                style={{color: '#888'}}>&#9679;</span>);
+    }
+    const ticking = c.us_since_last_tick < 3 * c.tick_period_us;
+    const periodMs = (c.tick_period_us / 1000).toFixed(3);
+    const clockNote = c.clock_state && c.clock_state !== 'locked'
+      ? '; media clock: ' + c.clock_state + ' (see PTP tab)' : '';
+    return ticking
+      ? (<span title={'pcm ' + pcmId + ' engine: on schedule (tick ' +
+                      periodMs + ' ms)' + clockNote}
+           style={{color: '#2a0'}}>&#9679;</span>)
+      : (<span title={'pcm ' + pcmId + ' engine: STALLED — started but not ' +
+                      'ticking (last tick ' +
+                      (c.us_since_last_tick / 1000).toFixed(0) + ' ms ago)' +
+                      clockNote}
+           style={{color: '#c00'}}>&#9679;</span>);
   }
 
   // W28: the PCM's rate from kernel truth — the live rate (what the chip is keyed

@@ -267,6 +267,7 @@ static std::string gm_block_json(const PTPStatus& status) {
 std::string ptp_status_to_json(const PTPStatus& status) {
   std::stringstream ss;
   ss << "{" << " \"status\": \"" << escape_json(status.status) << "\""
+     << ", \"clock_state\": \"" << escape_json(status.clock_state) << "\""
      << ", \"gmid\": \"" << escape_json(status.gmid) << "\""
      << ", \"jitter\": " << status.jitter << gm_block_json(status) << " }\n";
   return ss.str();
@@ -281,6 +282,7 @@ std::string ptp_domains_to_json(const std::map<uint8_t, PTPStatus>& by_domain) {
   for (const auto& [domain, status] : by_domain) {
     ss << (first ? "\n    " : ",\n    ") << "{ \"domain\": " << unsigned(domain)
        << ", \"status\": \"" << escape_json(status.status) << "\""
+       << ", \"clock_state\": \"" << escape_json(status.clock_state) << "\""
        << ", \"gmid\": \"" << escape_json(status.gmid) << "\""
        << ", \"jitter\": " << status.jitter << gm_block_json(status) << " }";
     first = false;
@@ -298,6 +300,8 @@ std::string pcm_clocks_to_json(const std::map<uint8_t, PcmRuntime>& by_pcm) {
     ss << (first ? "\n    " : ",\n    ") << "{ \"pcm_id\": " << unsigned(pcm_id)
        << ", \"tic_status\": \"" << escape_json(r.tic_status) << "\""
        << ", \"clock_state\": \"" << escape_json(r.clock_state) << "\""  // W16 slice 3
+       << ", \"tick_period_us\": " << r.tick_period_us       // 3b: execution health
+       << ", \"us_since_last_tick\": " << r.us_since_last_tick
        << ", \"live_rate\": " << r.live_rate          // W28: kernel-truth live rate
        << ", \"pending_rate\": " << r.pending_rate     // armed target, 0 = not armed
        << " }";

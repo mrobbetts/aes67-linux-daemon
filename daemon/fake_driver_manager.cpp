@@ -108,6 +108,7 @@ std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status
   (void)domain;
   status = TPTPStatus{};  /* W16 slice 3: zero the appended GM property block */
   status.nPTPLockStatus = PTPLS_UNLOCKED;
+  status.clock_state = CLK_NO_SIGNAL;  /* 3b: domain composite */
   status.ui64GMID[0] = 0xABABABABABABABAB;
   status.ui64GMID[1] = 0x0;
   status.i32ClockJitter = 0;
