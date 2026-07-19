@@ -414,6 +414,12 @@ class SessionManager {
    * arrives. The events are delivered into rerate_events_ by the driver's
    * event-thread handler (signal-and-defer; it never touches `this`). */
   void process_rerate_events_();
+  /* D5 (2026-06 audit): ONE convergence routine for "the kernel's live rate
+   * changed": sync the model, re-announce (o= bump) so downstream re-pulls,
+   * and re-attach a parked sink if one is pending. Called from the apply-event
+   * path AND the status-poll backstop — a lost event can no longer leave SAP
+   * announcing a new rate under a stale version. Worker thread only. */
+  void reconcile_rate_applied_(uint8_t pcm_id, uint32_t rate);
   // W15: wake the worker if it's parked in process_rerate_events_'s cv wait.
   void wake_worker_() {
     {
