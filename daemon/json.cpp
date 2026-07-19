@@ -242,7 +242,9 @@ std::string sink_status_to_json(const SinkStreamStatus& status) {
      << ", \n    \"some_muted\": " << status.is_some_muted
      << ", \n    \"all_muted\": " << status.is_all_muted
      << ", \n    \"muted\": " << status.is_muted << "\n  },"
-     << "\n  \"sink_min_time\": " << status.min_time << "\n}\n";
+     << "\n  \"sink_min_time\": " << status.min_time
+     << ",\n  \"sink_receive_offset\": " << status.receive_offset  // #32
+     << ",\n  \"sink_sample_rate\": " << status.sample_rate << "\n}\n";
   return ss.str();
 }
 

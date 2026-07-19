@@ -140,6 +140,12 @@ struct SinkStreamStatus {
   bool is_some_muted{false};
   bool is_all_muted{false};
   int min_time{0};
+  /* #32: the sink's receive offset in samples (received timestamp vs local
+   * playout SAC — the buffering margin; a steady drift = the sender's clock
+   * is not locked to ours) plus the pcm's live rate so consumers can convert
+   * to time and compute drift in ppm without a join. */
+  int32_t receive_offset{0};
+  uint32_t sample_rate{0};
 };
 
 struct PTPConfig {

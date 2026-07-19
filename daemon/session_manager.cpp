@@ -2121,6 +2121,11 @@ std::error_code SessionManager::get_sink_status(
     sink_status.is_some_muted = status.u.flags & 0x40;
     sink_status.is_all_muted = status.u.flags & 0x80;
     sink_status.min_time = status.sink_min_time;
+    /* #32: receive margin + the pcm's live rate (kernel truth) for time/ppm
+     * conversion by consumers. */
+    sink_status.receive_offset = status.sink_receive_offset;
+    sink_status.sample_rate =
+        rate_for_pcm_(static_cast<uint8_t>(info.stream[0].m_uiPCMId));
   }
 
   return ret;
@@ -2824,6 +2829,29 @@ bool SessionManager::worker() {
         {
           std::unique_lock<std::shared_mutex> lk(ptp_mutex_);
           ptp_pcm_status_ = std::move(pcm_status);
+        }
+
+        /* #32 / audit D8: consume the kernel's per-sink status — nothing did
+         * before, so a sender restarting with a new SSRC at the same rate left
+         * its sink MUTED FOREVER on rtp_ssrc_error (the VAD does exactly this).
+         * If the sink is receiving packets but rejecting them on SSRC, re-add
+         * it (same id => update, which re-acquires the SSRC). The 10 s poll
+         * cadence is the retry backoff; each pass logs what it did. */
+        for (const auto& sink : get_sinks()) {
+          SinkStreamStatus st;
+          if (get_sink_status(sink.id, st))
+            continue;
+          if (st.is_rtp_ssrc_error && st.is_receiving_rtp_packet) {
+            BOOST_LOG_TRIVIAL(warning)
+                << "session_manager:: sink " << (int)sink.id
+                << " is receiving but rejecting on SSRC (sender restarted?) — "
+                   "re-adding to re-acquire";
+            if (auto ec = add_sink(sink)) {
+              BOOST_LOG_TRIVIAL(error)
+                  << "session_manager:: sink " << (int)sink.id
+                  << " SSRC re-acquire re-add failed: " << ec.message();
+            }
+          }
         }
       }
       ptp_interval = 10;
