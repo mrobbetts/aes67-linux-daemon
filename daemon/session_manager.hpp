@@ -339,6 +339,11 @@ class SessionManager {
 
   bool load_status();
   bool save_status() const;
+  /* D7 (2026-06 audit): persistence used to be shutdown-only — a crash lost
+   * every topology change since boot. Mutators mark the status dirty; the
+   * worker saves (atomically) within ~1 s. Cheap, single-writer, crash-window
+   * shrinks from "since boot" to "since the last mutation, ≤1 s". */
+  void mark_status_dirty() { status_dirty_.store(true, std::memory_order_release); }
 
   size_t process_sap();
 
@@ -487,6 +492,10 @@ class SessionManager {
     StreamSink sink;  // re-added at the new rate once the re-rate applies
   };
   std::list<PendingRerate> pending_rerates_;   // worker-thread only
+
+  /* D7: set by any topology mutator (REST threads or worker), consumed by the
+   * worker's save pass. */
+  mutable std::atomic<bool> status_dirty_{false};
   /* PCMRateApplied events. Lives in its OWN heap object so the driver's
    * event-thread handler (which captures a shared_ptr copy) can safely outlive
    * this SessionManager — it only ever touches this queue, never `this`. The
