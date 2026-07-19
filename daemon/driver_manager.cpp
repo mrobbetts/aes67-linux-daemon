@@ -128,23 +128,19 @@ bool DriverManager::terminate(const Config& config) {
 }
 
 std::error_code DriverManager::hello() {
-  this->send_command(MT_ALSA_Msg_Hello, 0, nullptr);
-  return retcode_;
+  return send_command(MT_ALSA_Msg_Hello, 0, nullptr);
 }
 
 std::error_code DriverManager::bye() {
-  this->send_command(MT_ALSA_Msg_Bye, 0, nullptr);
-  return retcode_;
+  return send_command(MT_ALSA_Msg_Bye, 0, nullptr);
 }
 
 std::error_code DriverManager::start() {
-  this->send_command(MT_ALSA_Msg_Start, 0, nullptr);
-  return retcode_;
+  return send_command(MT_ALSA_Msg_Start, 0, nullptr);
 }
 
 std::error_code DriverManager::stop() {
-  this->send_command(MT_ALSA_Msg_Stop, 0, nullptr);
-  return retcode_;
+  return send_command(MT_ALSA_Msg_Stop, 0, nullptr);
 }
 
 std::error_code DriverManager::reset(int32_t pcm_id) {
@@ -152,59 +148,55 @@ std::error_code DriverManager::reset(int32_t pcm_id) {
    * pcm_id < 0 drains ALL streams (the init-time clean slate); pcm_id >= 0
    * drains only that PCM's streams, leaving the others running. */
   int32_t id = pcm_id;
-  this->send_command(MT_ALSA_Msg_Reset, sizeof(id),
+  return send_command(MT_ALSA_Msg_Reset, sizeof(id),
                      reinterpret_cast<const uint8_t*>(&id));
-  return retcode_;
 }
 
 std::error_code DriverManager::set_ptp_config(const TPTPConfig& config) {
   BOOST_LOG_TRIVIAL(info) << "driver_manager:: setting PTP Domain "
                           << (int)config.ui8Domain << " DSCP "
                           << (int)config.ui8DSCP;
-  this->send_command(MT_ALSA_Msg_SetPTPConfig, sizeof(TPTPConfig),
+  return send_command(MT_ALSA_Msg_SetPTPConfig, sizeof(TPTPConfig),
                      reinterpret_cast<const uint8_t*>(&config));
-  return retcode_;
 }
 
 std::error_code DriverManager::get_ptp_config(TPTPConfig& config) {
-  this->send_command(MT_ALSA_Msg_GetPTPConfig);
-  if (!retcode_) {
-    memcpy(&config, recv_data_, sizeof(TPTPConfig));
+  const auto ret =
+      send_command(MT_ALSA_Msg_GetPTPConfig, 0, nullptr, sizeof(TPTPConfig),
+                   reinterpret_cast<uint8_t*>(&config));
+  if (!ret) {
     BOOST_LOG_TRIVIAL(debug)
         << "driver_manager:: PTP Domain " << (int)config.ui8Domain << " DSCP "
         << (int)config.ui8DSCP;
   }
-  return retcode_;
+  return ret;
 }
 
 std::error_code DriverManager::get_ptp_status(uint8_t domain, TPTPStatus& status) {
-  this->send_command(MT_ALSA_Msg_GetPTPStatus, sizeof(domain),
-                     reinterpret_cast<const uint8_t*>(&domain));
-  if (!retcode_) {
-    memcpy(&status, recv_data_, sizeof(TPTPStatus));
+  const auto ret =
+      send_command(MT_ALSA_Msg_GetPTPStatus, sizeof(domain),
+                   reinterpret_cast<const uint8_t*>(&domain),
+                   sizeof(TPTPStatus), reinterpret_cast<uint8_t*>(&status));
+  if (!ret) {
     BOOST_LOG_TRIVIAL(debug)
         << "driver_manager:: PTP Status "
         << ptp_status_str[status.nPTPLockStatus] << " GMID "
         << status.ui64GMID[0] << " Jitter " << status.i32ClockJitter;
   }
-  return retcode_;
+  return ret;
 }
 
 std::error_code DriverManager::get_pcm_status(int32_t pcm_id,
                                               TPCMStatus& status) {
-  this->send_command(MT_ALSA_Msg_GetPCMStatus, sizeof(pcm_id),
-                     reinterpret_cast<const uint8_t*>(&pcm_id));
-  if (!retcode_) {
-    memcpy(&status, recv_data_, sizeof(TPCMStatus));
-  }
-  return retcode_;
+  return send_command(MT_ALSA_Msg_GetPCMStatus, sizeof(pcm_id),
+                      reinterpret_cast<const uint8_t*>(&pcm_id),
+                      sizeof(TPCMStatus), reinterpret_cast<uint8_t*>(&status));
 }
 
 std::error_code DriverManager::set_interface_name(const std::string& ifname) {
   BOOST_LOG_TRIVIAL(info) << "driver_manager:: setting interface " << ifname;
-  this->send_command(MT_ALSA_Msg_SetInterfaceName, ifname.length() + 1,
+  return send_command(MT_ALSA_Msg_SetInterfaceName, ifname.length() + 1,
                      reinterpret_cast<const uint8_t*>(ifname.c_str()));
-  return retcode_;
 }
 
 /* W10 multi-card constants — kept in lockstep by hand with the kernel (no
@@ -232,9 +224,8 @@ std::error_code DriverManager::add_card(uint8_t card_handle,
   BOOST_LOG_TRIVIAL(info) << "driver_manager:: add card handle="
                           << (int)card_handle << " id=\"" << args.id
                           << "\" domain=" << (int)domain;
-  this->send_command(MT_ALSA_Msg_AddCard, sizeof(args),
+  return send_command(MT_ALSA_Msg_AddCard, sizeof(args),
                      reinterpret_cast<const uint8_t*>(&args));
-  return retcode_;
 }
 
 std::error_code DriverManager::add_pcm_to_card(uint8_t card_handle,
@@ -271,27 +262,24 @@ std::error_code DriverManager::add_pcm_to_card(uint8_t card_handle,
                           << " rate=" << sample_rate << " in=" << num_inputs
                           << " out=" << num_outputs << " name=\"" << args.name
                           << "\"";
-  this->send_command(MT_ALSA_Msg_AddPCM, sizeof(args),
+  return send_command(MT_ALSA_Msg_AddPCM, sizeof(args),
                      reinterpret_cast<const uint8_t*>(&args));
-  return retcode_;
 }
 
 std::error_code DriverManager::register_card(uint8_t card_handle) {
   int32_t handle = card_handle;
   BOOST_LOG_TRIVIAL(info) << "driver_manager:: register card handle="
                           << (int)card_handle;
-  this->send_command(MT_ALSA_Msg_RegisterCard, sizeof(handle),
+  return send_command(MT_ALSA_Msg_RegisterCard, sizeof(handle),
                      reinterpret_cast<const uint8_t*>(&handle));
-  return retcode_;
 }
 
 std::error_code DriverManager::remove_card(uint8_t card_handle) {
   int32_t handle = card_handle;
   BOOST_LOG_TRIVIAL(info) << "driver_manager:: remove card handle="
                           << (int)card_handle;
-  this->send_command(MT_ALSA_Msg_RemoveCard, sizeof(handle),
+  return send_command(MT_ALSA_Msg_RemoveCard, sizeof(handle),
                      reinterpret_cast<const uint8_t*>(&handle));
-  return retcode_;
 }
 
 std::error_code DriverManager::add_rtp_stream(
@@ -306,56 +294,51 @@ std::error_code DriverManager::add_rtp_stream(
   int32_t id = pcm_id;
   memcpy(buf, &id, sizeof(id));
   memcpy(buf + sizeof(id), &stream_info, sizeof(stream_info));
-  this->send_command(MT_ALSA_Msg_Add_RTPStream, sizeof(buf), buf);
-  if (!retcode_) {
-    memcpy(&stream_handle, recv_data_, sizeof(stream_handle));
+  const auto ret =
+      send_command(MT_ALSA_Msg_Add_RTPStream, sizeof(buf), buf,
+                   sizeof(stream_handle),
+                   reinterpret_cast<uint8_t*>(&stream_handle));
+  if (!ret) {
     BOOST_LOG_TRIVIAL(info)
         << "driver_manager:: add RTP stream pcm_id=" << (int)pcm_id
         << " success handle " << stream_handle;
   }
-  return retcode_;
+  return ret;
 }
 
 std::error_code DriverManager::get_rtp_stream_status(
     uint64_t stream_handle,
     TRTP_stream_status& stream_status) {
-  this->send_command(MT_ALSA_Msg_GetRTPStreamStatus, sizeof(uint64_t),
-                     reinterpret_cast<const uint8_t*>(&stream_handle));
-  if (!retcode_) {
-    memcpy(&stream_status, recv_data_, sizeof(stream_status));
-  }
-  return retcode_;
+  return send_command(MT_ALSA_Msg_GetRTPStreamStatus, sizeof(uint64_t),
+                      reinterpret_cast<const uint8_t*>(&stream_handle),
+                      sizeof(stream_status),
+                      reinterpret_cast<uint8_t*>(&stream_status));
 }
 
 std::error_code DriverManager::remove_rtp_stream(uint64_t stream_handle) {
-  this->send_command(MT_ALSA_Msg_Remove_RTPStream, sizeof(uint64_t),
+  return send_command(MT_ALSA_Msg_Remove_RTPStream, sizeof(uint64_t),
                      reinterpret_cast<const uint8_t*>(&stream_handle));
-  return retcode_;
 }
 
 std::error_code DriverManager::ping() {
-  this->send_command(MT_ALSA_Msg_Ping);
-  return retcode_;
+  return send_command(MT_ALSA_Msg_Ping);
 }
 
 std::error_code DriverManager::set_tic_frame_size_at_1fs(uint64_t frame_size) {
-  this->send_command(MT_ALSA_Msg_SetTICFrameSizeAt1FS, sizeof(uint64_t),
+  return send_command(MT_ALSA_Msg_SetTICFrameSizeAt1FS, sizeof(uint64_t),
                      reinterpret_cast<const uint8_t*>(&frame_size));
-  return retcode_;
 }
 
 std::error_code DriverManager::set_max_tic_frame_size(uint64_t frame_size) {
-  this->send_command(MT_ALSA_Msg_SetMaxTICFrameSize, sizeof(uint64_t),
+  return send_command(MT_ALSA_Msg_SetMaxTICFrameSize, sizeof(uint64_t),
                      reinterpret_cast<const uint8_t*>(&frame_size));
-  return retcode_;
 }
 
 std::error_code DriverManager::set_playout_delay(uint8_t pcm_id, int32_t delay) {
   /* Payload: {int32_t pcm_id, int32_t delay_in_samples}. */
   int32_t buf[2] = { pcm_id, delay };
-  this->send_command(MT_ALSA_Msg_SetPlayoutDelay, sizeof(buf),
+  return send_command(MT_ALSA_Msg_SetPlayoutDelay, sizeof(buf),
                      reinterpret_cast<const uint8_t*>(buf));
-  return retcode_;
 }
 
 std::error_code DriverManager::set_capture_delay(uint8_t pcm_id, int32_t delay) {
@@ -363,71 +346,54 @@ std::error_code DriverManager::set_capture_delay(uint8_t pcm_id, int32_t delay) 
    * latency (snd_pcm_delay()); the real receive buffering is the sink link
    * offset. Was never sent before W9 #14 (capture delay was dead end-to-end). */
   int32_t buf[2] = { pcm_id, delay };
-  this->send_command(MT_ALSA_Msg_SetCaptureDelay, sizeof(buf),
+  return send_command(MT_ALSA_Msg_SetCaptureDelay, sizeof(buf),
                      reinterpret_cast<const uint8_t*>(buf));
-  return retcode_;
 }
 
 std::error_code DriverManager::set_pcm_rate(uint8_t pcm_id, uint32_t rate) {
-  /* W15: payload {int32_t pcm_id, uint32_t sample_rate}. retcode_ == {} means
+  /* W15: payload {int32_t pcm_id, uint32_t sample_rate}. A {} return means
    * applied (chip was idle); DriverErrc::busy means armed (chip held open, the
    * kernel applies on last close — the caller retries). */
   int32_t buf[2] = { pcm_id, static_cast<int32_t>(rate) };
-  this->send_command(MT_ALSA_Msg_SetPCMRate, sizeof(buf),
+  return send_command(MT_ALSA_Msg_SetPCMRate, sizeof(buf),
                      reinterpret_cast<const uint8_t*>(buf));
-  return retcode_;
 }
 
 std::error_code DriverManager::cancel_pcm_rate(uint8_t pcm_id) {
   /* W28: retract an armed in-place re-rate (disarm the kernel latch). Payload
    * {int32_t pcm_id}. Idempotent — a no-op when the chip isn't armed. */
   int32_t buf = pcm_id;
-  this->send_command(MT_ALSA_Msg_CancelPCMRate, sizeof(buf),
+  return send_command(MT_ALSA_Msg_CancelPCMRate, sizeof(buf),
                      reinterpret_cast<const uint8_t*>(&buf));
-  return retcode_;
 }
 
 std::error_code DriverManager::get_number_of_inputs(uint8_t pcm_id,
                                                     int32_t& inputs) {
   /* Payload: int32_t pcm_id. Reply: uint32_t count. */
   int32_t id = pcm_id;
-  this->send_command(MT_ALSA_Msg_GetNumberOfInputs, sizeof(id),
-                     reinterpret_cast<const uint8_t*>(&id));
-  if (!retcode_) {
-    memcpy(&inputs, recv_data_, sizeof(uint32_t));
+  const auto ret = send_command(MT_ALSA_Msg_GetNumberOfInputs, sizeof(id),
+                                reinterpret_cast<const uint8_t*>(&id),
+                                sizeof(uint32_t),
+                                reinterpret_cast<uint8_t*>(&inputs));
+  if (!ret) {
     BOOST_LOG_TRIVIAL(info) << "driver_manager:: number of inputs pcm_id="
                             << (int)pcm_id << " = " << inputs;
   }
-  return retcode_;
+  return ret;
 }
 
 std::error_code DriverManager::get_number_of_outputs(uint8_t pcm_id,
                                                      int32_t& outputs) {
   int32_t id = pcm_id;
-  this->send_command(MT_ALSA_Msg_GetNumberOfOutputs, sizeof(id),
-                     reinterpret_cast<const uint8_t*>(&id));
-  if (!retcode_) {
-    memcpy(&outputs, recv_data_, sizeof(uint32_t));
+  const auto ret = send_command(MT_ALSA_Msg_GetNumberOfOutputs, sizeof(id),
+                                reinterpret_cast<const uint8_t*>(&id),
+                                sizeof(uint32_t),
+                                reinterpret_cast<uint8_t*>(&outputs));
+  if (!ret) {
     BOOST_LOG_TRIVIAL(info) << "driver_manager:: number of outputs pcm_id="
                             << (int)pcm_id << " = " << outputs;
   }
-  return retcode_;
-}
-
-void DriverManager::on_command_done(enum MT_ALSA_msg_id id,
-                                    size_t size,
-                                    const uint8_t* data) {
-  BOOST_LOG_TRIVIAL(debug) << "driver_manager:: cmd " << alsa_msg_str[id]
-                           << " done data len " << size;
-  memcpy(recv_data_, data, size);
-  retcode_ = std::error_code{};
-}
-
-void DriverManager::on_command_error(enum MT_ALSA_msg_id id,
-                                     std::error_code error) {
-  BOOST_LOG_TRIVIAL(error) << "driver_manager:: cmd " << alsa_msg_str[id]
-                           << " failed with error " << error.message();
-  retcode_ = error;
+  return ret;
 }
 
 void DriverManager::on_event(enum MT_ALSA_msg_id id,

@@ -46,14 +46,19 @@ class DriverHandler {
   virtual bool terminate(const Config& config);
 
  protected:
-  virtual void send_command(enum MT_ALSA_msg_id id,
-                            size_t size = 0,
-                            const uint8_t* data = nullptr);
-  virtual void on_command_done(enum MT_ALSA_msg_id id,
-                               size_t size = 0,
-                               const uint8_t* data = nullptr) = 0;
-  virtual void on_command_error(enum MT_ALSA_msg_id id,
-                                std::error_code error) = 0;
+  /* D2 (2026-06 audit): one command transaction — send, receive, and copy the
+   * reply payload into the CALLER's buffer — entirely under mutex_, result
+   * returned BY VALUE. The old shape pushed the result into shared subclass
+   * members via on_command_done/on_command_error which wrappers read AFTER the
+   * lock dropped, so concurrent callers (REST threads vs the worker) could
+   * swap each other's replies — including RTP stream handles. reply_data
+   * (reply_size bytes, zeroed first) receives at most reply_size bytes of the
+   * reply payload; a short reply leaves the tail zeroed, never stale. */
+  virtual std::error_code send_command(enum MT_ALSA_msg_id id,
+                                       size_t size = 0,
+                                       const uint8_t* data = nullptr,
+                                       size_t reply_size = 0,
+                                       uint8_t* reply_data = nullptr);
   virtual void on_event(enum MT_ALSA_msg_id id,
                         size_t& res_size,
                         uint8_t* res,

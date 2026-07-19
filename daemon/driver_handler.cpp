@@ -17,6 +17,7 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
+#include <algorithm>
 #include <iostream>
 #include <thread>
 
@@ -146,13 +147,20 @@ bool DriverHandler::terminate(const Config& /* config */) {
   return true;
 }
 
-void DriverHandler::send_command(enum MT_ALSA_msg_id id,
-                                 size_t data_size,
-                                 const uint8_t* data) {
+std::error_code DriverHandler::send_command(enum MT_ALSA_msg_id id,
+                                            size_t data_size,
+                                            const uint8_t* data,
+                                            size_t reply_size,
+                                            uint8_t* reply_data) {
   std::lock_guard<std::mutex> lock{mutex_};
+  /* D2: deterministic caller buffer — a short reply or an error path leaves
+   * zeros, never stale bytes from a previous transaction. */
+  if (reply_size && reply_data)
+    memset(reply_data, 0, reply_size);
   if (data_size > max_payload) {
-    on_command_error(id, DaemonErrc::send_invalid_size);
-    return;
+    BOOST_LOG_TRIVIAL(error) << "driver_handler:: cmd " << id
+                             << " invalid data size " << data_size;
+    return DaemonErrc::send_invalid_size;
   }
 
   BOOST_LOG_TRIVIAL(debug) << "driver_handler:: sending command code " << id
@@ -162,8 +170,7 @@ void DriverHandler::send_command(enum MT_ALSA_msg_id id,
     send(id, client_u2k_, command_buffer_, data_size, data);
   } catch (boost::system::error_code& ec) {
     BOOST_LOG_TRIVIAL(error) << "driver_handler:: u2k_send_to " << ec.message();
-    on_command_error(id, DaemonErrc::send_u2k_failed);
-    return;
+    return DaemonErrc::send_u2k_failed;
   }
 
   BOOST_LOG_TRIVIAL(debug) << "driver_handler:: command code " << id
@@ -174,8 +181,7 @@ void DriverHandler::send_command(enum MT_ALSA_msg_id id,
                           boost::posix_time::seconds(reply_timeout_secs), ec);
   if (ec) {
     BOOST_LOG_TRIVIAL(error) << "driver_handler:: u2k_receive " << ec.message();
-    on_command_error(id, DaemonErrc::receive_u2k_failed);
-    return;
+    return DaemonErrc::receive_u2k_failed;
   }
 
   for (struct nlmsghdr* nlh = (nlmsghdr*)command_buffer_;
@@ -192,17 +198,34 @@ void DriverHandler::send_command(enum MT_ALSA_msg_id id,
         BOOST_LOG_TRIVIAL(warning)
             << "driver_handler:: unexpected cmd response:" << "sent " << id
             << " received " << palsa_msg->id;
-        on_command_error(palsa_msg->id, DaemonErrc::invalid_driver_response);
-      } else {
-        if (palsa_msg->errCode == 0) {
-          // dump((uint8_t*)palsa_msg + data_offset, palsa_msg->dataSize);
-          on_command_done(
-              palsa_msg->id, palsa_msg->dataSize,
-              reinterpret_cast<const uint8_t*>(palsa_msg) + data_offset);
-        } else {
-          on_command_error(palsa_msg->id, get_driver_error(palsa_msg->errCode));
-        }
+        return DaemonErrc::invalid_driver_response;
       }
+      if (palsa_msg->errCode != 0) {
+        BOOST_LOG_TRIVIAL(error) << "driver_handler:: cmd " << id
+                                 << " failed with driver error "
+                                 << palsa_msg->errCode;
+        return get_driver_error(palsa_msg->errCode);
+      }
+      /* Success: hand the payload to the caller — still under the lock, so a
+       * concurrent transaction can never swap it out from under us. */
+      if (reply_size && reply_data) {
+        size_t n = std::min(reply_size, (size_t)palsa_msg->dataSize);
+        if (n)
+          memcpy(reply_data,
+                 reinterpret_cast<const uint8_t*>(palsa_msg) + data_offset, n);
+        if ((size_t)palsa_msg->dataSize < reply_size)
+          BOOST_LOG_TRIVIAL(debug)
+              << "driver_handler:: cmd " << id << " short reply ("
+              << palsa_msg->dataSize << " < " << reply_size
+              << " bytes) — tail zeroed";
+      }
+      return std::error_code{};
     }
   }
+  /* Datagram carried no NLMSG_DONE reply at all. The legacy path fell through
+   * SILENTLY here, leaving the previous transaction's result in place — a
+   * latent stale-status bug on top of the race. */
+  BOOST_LOG_TRIVIAL(error) << "driver_handler:: cmd " << id
+                           << " reply datagram contained no response";
+  return DaemonErrc::invalid_driver_response;
 }
