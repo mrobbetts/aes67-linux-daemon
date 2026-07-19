@@ -108,10 +108,12 @@ class DriverManager : public DriverHandler {
   std::error_code reset(int32_t pcm_id);  // pcm_id < 0 = all PCMs (clean slate); >= 0 = that PCM only (W9)
   std::error_code bye();
 
-  void on_command_done(enum MT_ALSA_msg_id id,
-                       size_t size = 0,
-                       const uint8_t* data = nullptr) override;
-  void on_command_error(enum MT_ALSA_msg_id id, std::error_code error) override;
+  /* D2 (2026-06 audit): command results now come back BY VALUE from
+   * send_command (reply payload copied into the caller's buffer under the
+   * command mutex) — the shared retcode_/recv_data_ members and the
+   * on_command_done/on_command_error callbacks are gone; concurrent driver
+   * calls from REST threads and the worker can no longer swap each other's
+   * replies. */
   void on_event(enum MT_ALSA_msg_id id,
                 size_t& res_size,
                 uint8_t* res,
@@ -120,9 +122,6 @@ class DriverManager : public DriverHandler {
   void on_event_error(enum MT_ALSA_msg_id id, std::error_code error) override;
 
  private:
-  std::error_code retcode_;
-  uint8_t recv_data_[NLMSG_SPACE(max_payload)]{0};
-
   int32_t output_volume_{-20};
   int32_t output_switch_{0};
   std::function<void(uint8_t /*pcm_id*/, uint32_t /*rate*/)>
