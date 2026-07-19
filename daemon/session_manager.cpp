@@ -29,7 +29,9 @@
 #include <boost/property_tree/ptree.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cstdio>  /* D7: std::rename / std::remove for atomic status writes */
 #include <experimental/map>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
@@ -547,6 +549,7 @@ std::error_code SessionManager::bring_up_card_(const Card& card,
   for (const auto& pcm : ordered) {
     pcms_[pcm.pcm_id] = pcm;
   }
+  mark_status_dirty();  /* D7: card/pcm topology committed */
   return std::error_code{};
 }
 
@@ -652,6 +655,7 @@ std::error_code SessionManager::remove_card(uint8_t handle) {
         ++pit;
       }
     }
+    mark_status_dirty();  /* D7: card removed */
   }
   /* persistence is captured at shutdown / by the REST handler (see add_card). */
   BOOST_LOG_TRIVIAL(info) << "session_manager:: removed card handle="
@@ -1118,8 +1122,13 @@ bool SessionManager::load_status() {
   std::list<StreamSink> sinks_list;
 
   /* Read persisted state if a status file is configured and present. A missing
-   * file is normal on first boot (cards are seeded from config below); a present
-   * but unparseable file is fatal. */
+   * file is normal on first boot (cards are seeded from config below).
+   * D7 (2026-06 audit): a present-but-unparseable file used to be silently
+   * ignored — the daemon ran with an empty topology and the next clean save
+   * OVERWROTE the only copy, making the loss permanent. QUARANTINE the bad
+   * file instead (rename to <path>.corrupt): the evidence survives for hand
+   * recovery, the daemon comes up empty and says so loudly. (With the atomic
+   * tmp+rename writer we should never produce such a file ourselves.) */
   if (!config_->get_status_file().empty()) {
     std::ifstream jsonstream(config_->get_status_file());
     if (jsonstream) {
@@ -1127,8 +1136,21 @@ bool SessionManager::load_status() {
         json_to_status(jsonstream, cards_list, pcms_list, sources_list,
                        sinks_list);
       } catch (const std::runtime_error& e) {
-        BOOST_LOG_TRIVIAL(fatal)
-            << "session_manager:: cannot parse status file " << e.what();
+        const auto path = config_->get_status_file();
+        const auto quarantine_path = path + ".corrupt";
+        jsonstream.close();
+        if (std::rename(path.c_str(), quarantine_path.c_str()) == 0) {
+          BOOST_LOG_TRIVIAL(fatal)
+              << "session_manager:: cannot parse status file (" << e.what()
+              << "); quarantined it as " << quarantine_path
+              << " and continuing with an EMPTY topology — recover by fixing "
+                 "and restoring that file";
+        } else {
+          BOOST_LOG_TRIVIAL(fatal)
+              << "session_manager:: cannot parse status file (" << e.what()
+              << ") and could not quarantine it; continuing with an EMPTY "
+                 "topology — the file will be OVERWRITTEN by the next save";
+        }
         return false;
       }
     } else {
@@ -1216,14 +1238,36 @@ bool SessionManager::save_status() const {
     return true;
   }
 
-  std::ofstream jsonstream(config_->get_status_file());
-  if (!jsonstream) {
-    BOOST_LOG_TRIVIAL(fatal) << "session_manager:: cannot save to status file "
-                             << config_->get_status_file();
+  /* D7 (2026-06 audit): atomic write — the direct overwrite meant a crash
+   * mid-save TRUNCATED status.json, and the next boot then ran (and later
+   * persisted) an empty topology. Write the whole document to a sibling tmp
+   * file and rename() it into place: readers and crashes see either the old
+   * complete file or the new complete file, never a torn one. */
+  const auto path = config_->get_status_file();
+  const auto tmp_path = path + ".tmp";
+  {
+    std::ofstream jsonstream(tmp_path, std::ios::trunc);
+    if (!jsonstream) {
+      BOOST_LOG_TRIVIAL(fatal)
+          << "session_manager:: cannot write status tmp file " << tmp_path;
+      return false;
+    }
+    jsonstream << status_to_json(get_cards(), get_pcms(), get_sources(),
+                                 get_sinks());
+    jsonstream.close();
+    if (!jsonstream) {
+      BOOST_LOG_TRIVIAL(fatal)
+          << "session_manager:: write to status tmp file failed " << tmp_path;
+      (void)std::remove(tmp_path.c_str());
+      return false;
+    }
+  }
+  if (std::rename(tmp_path.c_str(), path.c_str()) != 0) {
+    BOOST_LOG_TRIVIAL(fatal) << "session_manager:: cannot move status tmp file "
+                             << tmp_path << " into place";
+    (void)std::remove(tmp_path.c_str());
     return false;
   }
-  jsonstream << status_to_json(get_cards(), get_pcms(), get_sources(),
-                               get_sinks());
   BOOST_LOG_TRIVIAL(info) << "session_manager:: status file saved";
 
   return true;
@@ -1526,6 +1570,7 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
 
   // update source map
   sources_[source.id] = info;
+  mark_status_dirty();  /* D7: source committed */
   BOOST_LOG_TRIVIAL(info) << "session_manager:: added source "
                           << std::to_string(source.id) << " " << info.handle[0]
                           << "," << info.handle[1];
@@ -1690,6 +1735,7 @@ std::error_code SessionManager::remove_source(uint32_t id) {
   }
   if (!ret) {
     sources_.erase(id);
+    mark_status_dirty();  /* D7: source removed */
   }
 
   return ret;
@@ -2009,6 +2055,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
 
   // update sinks map
   sinks_[sink.id] = info;
+  mark_status_dirty();  /* D7: sink committed */
   BOOST_LOG_TRIVIAL(info) << "session_manager:: added sink "
                           << std::to_string(sink.id) << " " << info.handle[0]
                           << "," << info.handle[1];
@@ -2038,6 +2085,7 @@ std::error_code SessionManager::remove_sink(uint32_t id) {
   if (!ret) {
     on_remove_sink(info);
     sinks_.erase(id);
+    mark_status_dirty();  /* D7: sink removed */
   }
 
   return ret;
@@ -2475,6 +2523,7 @@ void SessionManager::set_pcm_rate_model_(uint8_t pcm_id, uint32_t new_rate) {
   auto it = pcms_.find(pcm_id);
   if (it != pcms_.end()) {
     it->second.sample_rate = new_rate;
+    mark_status_dirty();  /* D7: pcm rate truth changed */
     BOOST_LOG_TRIVIAL(info)
         << "session_manager:: in-place re-rate applied: pcm \"" << it->second.name
         << "\" (pcm_id " << (int)pcm_id << ") -> " << new_rate << " Hz";
@@ -2807,6 +2856,16 @@ bool SessionManager::worker() {
     // event wakes us immediately); re-attaches deferred sinks. Replaces the old
     // fixed 1 s sleep, so the loop is event-paced for re-rates.
     process_rerate_events_();
+
+    /* D7 (2026-06 audit): persist topology changes as they happen — the old
+     * shutdown-only save lost everything since boot on a crash. Mutators set
+     * the dirty flag; this pass (~1 s cadence via the rerate cv-wait) writes
+     * the file atomically. On a failed save, stay dirty and retry next pass. */
+    if (status_dirty_.exchange(false, std::memory_order_acq_rel)) {
+      if (!save_status()) {
+        status_dirty_.store(true, std::memory_order_release);
+      }
+    }
   }
 
   // at end, send deletion for all announced sources

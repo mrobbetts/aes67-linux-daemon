@@ -204,8 +204,16 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error(std::string("HttpServer:: init failed"));
       }
 
-      /* load session status from file */
-      session_manager->load_status();
+      /* load session status from file. D7: a false return means a corrupt
+       * status file was quarantined (<status_file>.corrupt) — keep serving
+       * with an empty topology; the operator restores from the quarantined
+       * copy. Ignoring this silently is what used to let the next clean save
+       * overwrite the only copy. */
+      if (!session_manager->load_status()) {
+        BOOST_LOG_TRIVIAL(fatal)
+            << "main:: status file was corrupt and has been quarantined; "
+               "running with an EMPTY topology (see session_manager log above)";
+      }
 
 #ifdef _USE_NMOS_
       /* start NMOS manager */
