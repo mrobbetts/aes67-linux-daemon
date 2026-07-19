@@ -40,8 +40,14 @@ class SinkEntry extends Component {
     this.state = {
       min_time: 'n/a',
       flags: 'n/a',
-      errors: 'n/a'
+      flagsColor: '#888',
+      errors: 'n/a',
+      offset: null,        // samples (kernel receive margin)
+      rate: 0,             // the pcm's live rate, for ms/ppm conversion
+      driftPpm: null       // sender clock vs ours, from the offset trend
     };
+    // #32: drift baseline — {t (ms), offset (samples)}; reset on jumps.
+    this.driftBase = null;
   }
 
   handleEditClick = () => {
@@ -52,7 +58,8 @@ class SinkEntry extends Component {
     this.props.onTrashClick(this.props.id);
   };
 
-  componentDidMount() {
+  // #32: poll the sink status live (it used to be fetched once at mount).
+  fetchStatus = () => {
     RestAPI.getSinkStatus(this.props.id)
       .then(response => response.json())
       .then(function(status) {
@@ -65,32 +72,107 @@ class SinkEntry extends Component {
           errors += (errors ? ',' : '') + 'payload type';
         if (status.sink_flags.rtp_sac_error)
           errors += (errors ? ',' : '') + 'SAC';
+        // (fixed: these keys had stray underscores, so mute states never showed)
         let flags = '';
-        if (status.sink_flags.receiving_rtp_packet)
-          flags += 'receiving';
-        if (status.sink_flags._some_muted)
-          flags += (flags ? ',' : '') + 'some muted';
-        if (status.sink_flags._all_muted)
-          flags += (flags ? ',' : '') + 'all muted';
-        if (status.sink_flags._muted)
-          flags += (flags ? ',' : '') + 'muted';
+        let color = '#888';
+        if (status.sink_flags.receiving_rtp_packet) {
+          flags = 'receiving';
+          color = '#2a0';
+        }
+        if (status.sink_flags.some_muted)
+          flags += (flags ? ', ' : '') + 'some muted';
+        if (status.sink_flags.all_muted || status.sink_flags.muted) {
+          flags += (flags ? ', ' : '') + 'muted';
+          color = '#c00';
+        }
+        if (!flags)
+          flags = 'idle';
+
+        // #32: sender-drift estimate from the receive-margin trend. Sender and
+        // sink share a PTP GM, so the margin should be FLAT; a steady slope is
+        // the sender free-wheeling (the VAD failure class). Slope measured
+        // against a retained baseline; re-baselined on any jump (re-add /
+        // re-anchor / start) so one discontinuity doesn't fake a huge drift.
+        const rate = status.sink_sample_rate || 0;
+        const receiving = status.sink_flags.receiving_rtp_packet;
+        const offset = receiving ? status.sink_receive_offset : null;
+        let driftPpm = this.state.driftPpm;
+        if (offset === null || !rate) {
+          this.driftBase = null;
+          driftPpm = null;
+        } else {
+          const now = Date.now();
+          const jumped = this.driftBase &&
+            Math.abs(offset - this.driftBase.offset) > rate / 2;  // >0.5 s step
+          if (!this.driftBase || jumped) {
+            this.driftBase = { t: now, offset: offset };
+            driftPpm = null;
+          } else {
+            const dt = (now - this.driftBase.t) / 1000;
+            if (dt >= 15) {  // enough window for sub-10ppm resolution
+              driftPpm = ((offset - this.driftBase.offset) / rate / dt) * 1e6;
+            }
+          }
+        }
+
         this.setState({
           min_time: status.sink_min_time + ' ms',
-          flags: flags ? flags : 'idle',
-          errors: errors ? errors : 'none'
+          flags: flags,
+          flagsColor: color,
+          errors: errors ? errors : 'none',
+          offset: offset,
+          rate: rate,
+          driftPpm: driftPpm
         });
       }.bind(this));
+  };
+
+  componentDidMount() {
+    this.fetchStatus();
+    this.statusTimer = setInterval(this.fetchStatus, 3000);
+  }
+
+  componentWillUnmount() {
+    clearInterval(this.statusTimer);
   }
 
   render() {
+    // #32: receive margin as samples + ms; drift coloured by how locked the
+    // sender is to our clock (shared GM => ~0 ppm; a freewheeler shows tens
+    // to thousands of ppm and WILL eventually garble).
+    const offsetText = this.state.offset !== null && this.state.rate
+      ? this.state.offset + ' smp (' +
+        (this.state.offset / this.state.rate * 1000).toFixed(1) + ' ms)'
+      : '—';
+    const d = this.state.driftPpm;
+    const driftText = d === null ? '—'
+      : (d >= 0 ? '+' : '') + d.toFixed(1) + ' ppm';
+    const driftColor = d === null ? '#888'
+      : Math.abs(d) > 10 ? '#c00'
+      : Math.abs(d) > 3 ? '#d90' : '#2a0';
+    const driftTip = d === null
+      ? 'sender clock vs ours — measuring (needs ~15 s of samples)'
+      : 'sender clock vs ours, from the receive-margin trend: ~0 = locked to '
+        + 'the same GM; a sustained offset means the sender is free-wheeling '
+        + 'and this sink will eventually garble';
     return (
       <tr className='tr-stream'>
         <td> <label>{this.props.id}</label> </td>
         <td> <label>{this.props.name}</label> </td>
         <td align='center'> <label>{this.props.channels}</label> </td>
-        <td align='center'> <label>{this.state.flags}</label> </td>
-        <td align='center'> <label>{this.state.errors}</label> </td>
+        <td align='center'>
+          <label style={{color: this.state.flagsColor}}>{this.state.flags}</label>
+        </td>
+        <td align='center'>
+          <label style={{color: this.state.errors === 'none' ? '#888' : '#c00'}}>
+            {this.state.errors}
+          </label>
+        </td>
         <td align='center'> <label>{this.state.min_time}</label> </td>
+        <td align='center'> <label title='receive margin: received timestamps vs local playout'>{offsetText}</label> </td>
+        <td align='center'>
+          <label title={driftTip} style={{color: driftColor}}>{driftText}</label>
+        </td>
         <td> <span className='pointer-area' onClick={this.handleEditClick}> <img width='20' height='20' src='/edit.png' alt=''/> </span> </td>
         <td> <span className='pointer-area' onClick={this.handleTrashClick}> <img width='20' height='20' src='/trash.png' alt=''/> </span> </td>
       </tr>
@@ -125,6 +207,8 @@ class SinkList extends Component {
               <th>Status</th>
               <th>Errors</th>
               <th>Min. arrival time</th>
+              <th>Receive margin</th>
+              <th>Sender drift</th>
             </tr>
           : <tr>
              <th>No sinks configured</th>
