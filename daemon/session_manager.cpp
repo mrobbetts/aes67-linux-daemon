@@ -1230,6 +1230,10 @@ bool SessionManager::save_status() const {
 }
 
 uint8_t SessionManager::get_source_id(const std::string& name) const {
+  /* D3 (2026-06 audit): called from the RTSP io thread on every DESCRIBE,
+   * racing writers (on_add/remove_source under sources_mutex_ unique) — an
+   * unsynchronized std::map read vs a rebalancing insert/erase is UB. */
+  std::shared_lock sources_lock(sources_mutex_);
   const auto it = source_names_.find(name);
   return it != source_names_.end() ? it->second : (stream_id_max + 1);
 }
@@ -1503,7 +1507,11 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
         }
         ret = driver_->add_rtp_stream(source.pcm, info.stream[1], info.handle[1]);
         if (ret) {
-          (void)driver_->remove_rtp_stream((*it).second.handle[0]);
+          /* D1 (2026-06 audit): roll back the stream just created for THIS
+           * add — info.handle[0] — not (*it).second.handle[0], which is the
+           * PREVIOUS source's already-removed handle (double-remove) and an
+           * end() deref (UB) on a fresh add. */
+          (void)driver_->remove_rtp_stream(info.handle[0]);
           if (it != sources_.end()) {
             /* update operation failed */
             sources_.erase(source.id);
@@ -1688,6 +1696,8 @@ std::error_code SessionManager::remove_source(uint32_t id) {
 }
 
 uint8_t SessionManager::get_sink_id(const std::string& name) const {
+  /* D3: see get_source_id — reads must hold the mutex the writers hold. */
+  std::shared_lock sinks_lock(sinks_mutex_);
   const auto it = sink_names_.find(name);
   return it != sink_names_.end() ? it->second : (stream_id_max + 1);
 }
@@ -1979,7 +1989,11 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
       }
       ret = driver_->add_rtp_stream(sink.pcm, info.stream[1], info.handle[1]);
       if (ret) {
-        (void)driver_->remove_rtp_stream((*it).second.handle[0]);
+        /* D1 (2026-06 audit): roll back the stream just created for THIS add —
+         * info.handle[0] — not (*it).second.handle[0], which is the PREVIOUS
+         * sink's already-removed handle (double-remove) and an end() deref
+         * (UB) on a fresh add. */
+        (void)driver_->remove_rtp_stream(info.handle[0]);
         if (it != sinks_.end()) {
           /* update operation failed */
           sinks_.erase(sink.id);
@@ -2367,6 +2381,24 @@ void SessionManager::update_sinks() {
                 [&](const PendingRerate& p) { return p.pcm_id == pcm.pcm_id; });
             bool already_armed = in_place && pend != pending_rerates_.end() &&
                                  pend->new_rate == new_rate;
+            /* D6 (2026-06 audit): the daemon-side pending is a SHADOW of the
+             * kernel latch — validate it against kernel truth (the W28 mirror).
+             * If the kernel no longer holds this latch (module reloaded / card
+             * recreated while armed), the pending is poison: it would defer the
+             * sink forever waiting for an apply event that can never come.
+             * Drop it and fall through to re-arm. */
+            if (already_armed && pcm.pcm_id < pcm_id_max &&
+                pcm_pending_rate_[pcm.pcm_id].load(std::memory_order_acquire) !=
+                    new_rate) {
+              BOOST_LOG_TRIVIAL(warning)
+                  << "session_manager:: pending re-rate of pcm \"" << pcm.name
+                  << "\" -> " << new_rate
+                  << " has no kernel latch behind it (module reload or card "
+                     "recreate while armed?); dropping and re-arming";
+              pending_rerates_.erase(pend);
+              pend = pending_rerates_.end();
+              already_armed = false;
+            }
             if (already_armed) {
               deferred = true;
             } else {
@@ -2462,29 +2494,45 @@ void SessionManager::process_rerate_events_() {
     });
     applied.swap(rerate_events_->applied);
   }
-  for (auto& [pcm_id, rate] : applied) {
-    /* The kernel is authoritative for the live chip rate: sync the model and
-     * re-announce on EVERY apply event, whether or not we still hold a pending.
-     * Discarding an event with no matching pending is exactly what desynced the
-     * daemon from the kernel (a long-held client outlives any record we keep). */
-    set_pcm_rate_model_(pcm_id, rate);
-    reannounce_pcm_sources_(pcm_id);  // let downstream receivers auto-follow
-    /* re-attach the deferred sink iff we recorded one for this pcm */
-    auto it = std::find_if(
-        pending_rerates_.begin(), pending_rerates_.end(),
-        [pcm_id](const PendingRerate& p) { return p.pcm_id == pcm_id; });
-    if (it != pending_rerates_.end()) {
-      add_sink(it->sink);
-      BOOST_LOG_TRIVIAL(info)
-          << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
-          << " applied (kernel event); sink " << (int)it->sink.id
-          << " re-added at " << rate << " Hz";
-      pending_rerates_.erase(it);
-    } else {
-      BOOST_LOG_TRIVIAL(info)
-          << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
-          << " applied (kernel event); model synced to " << rate << " Hz";
-    }
+  /* D6 (2026-06 audit): drop pendings whose pcm no longer exists (card/pcm
+   * removed while armed) — they can never complete and would permanently
+   * short-circuit future follows for that pcm_id via already_armed. */
+  pending_rerates_.remove_if([this](const PendingRerate& p) {
+    Pcm tmp;
+    bool gone = !pcm_for_id_(p.pcm_id, tmp);
+    if (gone)
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: dropping pending re-rate for vanished pcm_id "
+          << (int)p.pcm_id << " (target " << p.new_rate << " Hz)";
+    return gone;
+  });
+
+  for (auto& [pcm_id, rate] : applied)
+    reconcile_rate_applied_(pcm_id, rate);
+}
+
+void SessionManager::reconcile_rate_applied_(uint8_t pcm_id, uint32_t rate) {
+  /* The kernel is authoritative for the live chip rate: sync the model and
+   * re-announce on EVERY apply, whether or not we still hold a pending.
+   * Discarding an event with no matching pending is exactly what desynced the
+   * daemon from the kernel (a long-held client outlives any record we keep). */
+  set_pcm_rate_model_(pcm_id, rate);
+  reannounce_pcm_sources_(pcm_id);  // let downstream receivers auto-follow
+  /* re-attach the deferred sink iff we recorded one for this pcm */
+  auto it = std::find_if(
+      pending_rerates_.begin(), pending_rerates_.end(),
+      [pcm_id](const PendingRerate& p) { return p.pcm_id == pcm_id; });
+  if (it != pending_rerates_.end()) {
+    add_sink(it->sink);
+    BOOST_LOG_TRIVIAL(info)
+        << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
+        << " applied; sink " << (int)it->sink.id
+        << " re-added at " << rate << " Hz";
+    pending_rerates_.erase(it);
+  } else {
+    BOOST_LOG_TRIVIAL(info)
+        << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
+        << " applied; model synced to " << rate << " Hz";
   }
 }
 
@@ -2705,6 +2753,22 @@ bool SessionManager::worker() {
                                                std::memory_order_release);
               pcm_pending_rate_[pcm.pcm_id].store(ps.pending_rate,
                                                   std::memory_order_release);
+              /* D5 (2026-06 audit): the mirror alone was HALF a backstop — a
+               * lost apply event left the model/announce stale: SAP carried the
+               * new rate under an UNCHANGED o= version (conformant receivers
+               * ignore it) and intent != truth persisted. Detect the silent
+               * divergence (live differs from the model, and no armed re-rate
+               * in flight to explain it) and run the SAME convergence as the
+               * event path. Worker thread — same context as the event path. */
+              if (ps.live_rate != 0 && ps.pending_rate == 0 &&
+                  ps.live_rate != pcm.sample_rate) {
+                BOOST_LOG_TRIVIAL(warning)
+                    << "session_manager:: poll backstop: pcm_id "
+                    << (int)pcm.pcm_id << " live rate " << ps.live_rate
+                    << " != model " << pcm.sample_rate
+                    << " with no apply event seen — reconciling";
+                reconcile_rate_applied_(pcm.pcm_id, ps.live_rate);
+              }
             }
           }
         }
