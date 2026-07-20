@@ -95,7 +95,15 @@ class SinkEntry extends Component {
         // re-anchor / start) so one discontinuity doesn't fake a huge drift.
         const rate = status.sink_sample_rate || 0;
         const receiving = status.sink_flags.receiving_rtp_packet;
-        const offset = receiving ? status.sink_receive_offset : null;
+        let offset = receiving ? status.sink_receive_offset : null;
+        // Guard (bench 2026-07-19): an exact-0 margin while receiving is the
+        // legacy kernel's "status tick saw no packet" artifact (per-packet
+        // cadence aliasing the tick rate) — never real audio (0 = mute floor
+        // crossed long before). Hold the last value so a glitch sample can
+        // neither seed nor reset the drift baseline (+398.8 ppm, once).
+        if (offset === 0 && receiving) {
+          offset = this.state.offset;
+        }
         let driftPpm = this.state.driftPpm;
         if (offset === null || !rate) {
           this.driftBase = null;
