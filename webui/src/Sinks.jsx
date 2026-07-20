@@ -117,7 +117,12 @@ class SinkEntry extends Component {
             driftPpm = null;
           } else {
             const dt = (now - this.driftBase.t) / 1000;
-            if (dt >= 15) {  // enough window for sub-10ppm resolution
+            // 30 s minimum: at 15 s a few samples of arrival jitter reads as
+            // ±8 ppm and flashed false ambers/reds on healthy sinks (bench
+            // 2026-07-19, "-11.1 ppm" on a locked sender). Noise at 30 s is
+            // under the 3 ppm amber threshold; precision keeps improving as
+            // the baseline ages.
+            if (dt >= 30) {
               driftPpm = ((offset - this.driftBase.offset) / rate / dt) * 1e6;
             }
           }
@@ -159,7 +164,7 @@ class SinkEntry extends Component {
       : Math.abs(d) > 10 ? '#c00'
       : Math.abs(d) > 3 ? '#d90' : '#2a0';
     const driftTip = d === null
-      ? 'sender clock vs ours — measuring (needs ~15 s of samples)'
+      ? 'sender clock vs ours — measuring (needs ~30 s of samples)'
       : 'sender clock vs ours, from the receive-margin trend: ~0 = locked to '
         + 'the same GM; a sustained offset means the sender is free-wheeling '
         + 'and this sink will eventually garble';
