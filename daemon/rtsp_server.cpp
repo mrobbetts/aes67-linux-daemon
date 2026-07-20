@@ -23,76 +23,116 @@ using boost::asio::ip::tcp;
 bool RtspServer::update_source(uint8_t id,
                                const std::string& name,
                                const std::string& sdp) {
-  bool ret = false;
   BOOST_LOG_TRIVIAL(debug) << "rtsp_server:: added source " << name;
   std::lock_guard<std::mutex> lock{mutex_};
   for (unsigned int i = 0; i < sessions_.size(); i++) {
     auto session = sessions_[i].lock();
     if (session != nullptr) {
-      ret |= session->announce(id, name, sdp, config_->get_ip_addr_str(),
-                               config_->get_rtsp_port());
+      /* D9: posts onto the io thread; whether this session described the
+       * source is decided THERE (io-thread-only state). */
+      session->announce(id, name, sdp, config_->get_ip_addr_str(),
+                        config_->get_rtsp_port());
     }
   }
-  return ret;
+  return true;
 }
 
 void RtspServer::accept() {
   acceptor_.async_accept(socket_, [this](boost::system::error_code ec) {
     if (!ec) {
+      /* D9: keepalive so the OS eventually errors reads on half-open peers
+       * (a power-cycled device that never sent FIN/RST) — the error completes
+       * the read chain and releases the session. */
+      boost::system::error_code opt_ec;
+      socket_.set_option(boost::asio::socket_base::keep_alive(true), opt_ec);
+
       std::lock_guard<std::mutex> lock{mutex_};
       /* check for free sessions */
       unsigned int i = 0;
       for (; i < sessions_.size(); i++) {
         if (sessions_[i].use_count() == 0) {
-          auto session = std::make_shared<RtspSession>(
-              config_, session_manager_, std::move(socket_));
-          sessions_[i] = session;
-          sessions_start_point_[i] = steady_clock::now();
-          session->start();
           break;
         }
       }
 
+      /* D9: table full — evict the LEAST-RECENTLY-ACTIVE session instead of
+       * refusing the newcomer. Slots used to leak one per dead/idle
+       * connection forever (nothing ever reaped), so a 24/7 fabric with
+       * reconnecting devices eventually exhausted all slots and new
+       * DESCRIBEs were closed at accept: a slow, silent outage of the very
+       * channel rate-follow rides. A live peer has recent reads/announces
+       * and is never the eviction victim in practice. */
       if (i == sessions_.size()) {
-        BOOST_LOG_TRIVIAL(warning)
-            << "rtsp_server:: too many clients connected, "
-            << socket_.remote_endpoint() << " closing...";
-        socket_.close();
+        unsigned int oldest = 0;
+        auto oldest_seen = steady_clock::time_point::max();
+        for (unsigned int j = 0; j < sessions_.size(); j++) {
+          auto session = sessions_[j].lock();
+          if (session && session->last_activity() < oldest_seen) {
+            oldest_seen = session->last_activity();
+            oldest = j;
+          }
+        }
+        if (auto session = sessions_[oldest].lock()) {
+          BOOST_LOG_TRIVIAL(warning)
+              << "rtsp_server:: session table full — evicting the least "
+                 "recently active session (slot "
+              << oldest << ") for a new connection";
+          session->stop();
+        }
+        i = oldest;
       }
+
+      auto session = std::make_shared<RtspSession>(config_, session_manager_,
+                                                   std::move(socket_));
+      sessions_[i] = session;
+      session->start();
     }
     accept();
   });
 }
 
-bool RtspSession::announce(uint8_t id,
+/* D9: any-thread entry point — hop onto the io executor; ALL session state
+ * (source_ids_, cseq_, the socket, the write queue) is io-thread-only. The
+ * old direct call raced process_request from the observer thread and was
+ * silently DROPPED whenever a request happened to be mid-parse. */
+void RtspSession::announce(uint8_t id,
                            const std::string& name,
                            const std::string& sdp,
                            const std::string& address,
                            uint16_t port) {
-  /* if a describe request is currently not beeing process
-   * and the specified source id has been described on this session send update
-   */
-  if (cseq_ < 0 && source_ids_.find(id) != source_ids_.end()) {
-    std::string path(std::string("/by-name/") + config_->get_node_id() + " " +
-                     name);
-    std::stringstream ss;
-    ss << "ANNOUNCE rtsp://" << address << ":" << std::to_string(port)
-       << httplib::detail::encode_url(path) << " RTSP/1.0\r\n"
-       << "User-Agent: aes67-daemon\r\n"
-       << "connection: Keep-Alive" << "\r\n"
-       << "CSeq: " << announce_cseq_++ << "\r\n"
-       << "Content-Length: " << sdp.length() << "\r\n"
-       << "Content-Type: application/sdp\r\n"
-       << "\r\n"
-       << sdp;
+  auto self(shared_from_this());
+  boost::asio::post(socket_.get_executor(),
+                    [self, id, name, sdp, address, port]() {
+                      self->announce_io(id, name, sdp, address, port);
+                    });
+}
 
-    BOOST_LOG_TRIVIAL(info) << "rtsp_server:: " << "ANNOUNCE for source "
-                            << name << " sent to " << socket_.remote_endpoint();
-
-    send_response(ss.str());
-    return true;
+void RtspSession::announce_io(uint8_t id,
+                              const std::string& name,
+                              const std::string& sdp,
+                              const std::string& address,
+                              uint16_t port) {
+  /* send only where this source was described on this session */
+  if (source_ids_.find(id) == source_ids_.end()) {
+    return;
   }
-  return false;
+  std::string path(std::string("/by-name/") + config_->get_node_id() + " " +
+                   name);
+  std::stringstream ss;
+  ss << "ANNOUNCE rtsp://" << address << ":" << std::to_string(port)
+     << httplib::detail::encode_url(path) << " RTSP/1.0\r\n"
+     << "User-Agent: aes67-daemon\r\n"
+     << "connection: Keep-Alive" << "\r\n"
+     << "CSeq: " << announce_cseq_++ << "\r\n"
+     << "Content-Length: " << sdp.length() << "\r\n"
+     << "Content-Type: application/sdp\r\n"
+     << "\r\n"
+     << sdp;
+
+  BOOST_LOG_TRIVIAL(info) << "rtsp_server:: " << "ANNOUNCE for source " << name
+                          << " queued to " << peer_str();
+
+  send_response(ss.str());
 }
 
 bool RtspSession::process_request() {
@@ -145,11 +185,11 @@ bool RtspSession::process_request() {
     return true;
   } else if (cseq_ < 0) {
     BOOST_LOG_TRIVIAL(error) << "rtsp_server:: CSeq not specified from "
-                             << socket_.remote_endpoint();
+                             << peer_str();
     send_error(400, "Bad Request");
   } else if (fields[2].substr(0, 5) != "RTSP/") {
     BOOST_LOG_TRIVIAL(error)
-        << "rtsp_server:: no RTSP specified from " << socket_.remote_endpoint();
+        << "rtsp_server:: no RTSP specified from " << peer_str();
     send_error(400, "Bad Request");
   } else if (fields[0] != "DESCRIBE") {
     send_error(405, "Method Not Allowed");
@@ -164,7 +204,7 @@ void RtspSession::build_response(const std::string& url) {
   auto const res = parse_url(url);
   if (!std::get<0>(res)) {
     BOOST_LOG_TRIVIAL(error) << "rtsp_server:: cannot parse URL " << url
-                             << " from " << socket_.remote_endpoint();
+                             << " from " << peer_str();
     send_error(400, "Bad Request");
     return;
   }
@@ -194,7 +234,7 @@ void RtspSession::build_response(const std::string& url) {
          << sdp;
       BOOST_LOG_TRIVIAL(info)
           << "rtsp_server:: " << request_ << " response 200 to "
-          << socket_.remote_endpoint();
+          << peer_str();
       send_response(ss.str());
       source_ids_.insert(id);
       return;
@@ -214,7 +254,8 @@ void RtspSession::read_request() {
         [this, self](boost::system::error_code ec, std::size_t length) {
           if (!ec) {
             BOOST_LOG_TRIVIAL(debug) << "rtsp_server:: received " << length
-                                     << " from " << socket_.remote_endpoint();
+                                     << " from " << peer_str();
+            touch();  /* D9: liveness for the eviction policy */
             length_ += length;
             while (length_ && process_request()) {
               /* step to the next request */
@@ -232,7 +273,7 @@ void RtspSession::read_request() {
 void RtspSession::send_error(int status_code, const std::string& description) {
   BOOST_LOG_TRIVIAL(error) << "rtsp_server:: " << request_ << " response "
                            << status_code << " to "
-                           << socket_.remote_endpoint();
+                           << peer_str();
   std::stringstream ss;
   ss << "RTSP/1.0 " << status_code << " " << description << "\r\n";
   if (cseq_ >= 0) {
@@ -242,26 +283,59 @@ void RtspSession::send_error(int status_code, const std::string& description) {
   send_response(ss.str());
 }
 
-void RtspSession::send_response(const std::string& response) {
+/* D9 (io-thread only): per-session write queue. Exactly one async_write is
+ * ever in flight per socket — two concurrent composed writes interleave their
+ * partial writes and corrupt the byte stream (a DESCRIBE response racing an
+ * ANNOUNCE, or two rapid announces from a re-rate reannounce sweep). */
+void RtspSession::send_response(std::string response) {
+  write_queue_.push_back(std::move(response));
+  if (write_queue_.size() == 1) {
+    write_next();
+  }
+}
+
+void RtspSession::write_next() {
   auto self(shared_from_this());
   boost::asio::async_write(
-      socket_, boost::asio::buffer(response.c_str(), response.length()),
-      [self](boost::system::error_code ec, std::size_t /*length*/) {
-        if (!ec) {
-          // we accept multiple requests within timeout
-          // stop();
+      socket_, boost::asio::buffer(write_queue_.front()),
+      [this, self](boost::system::error_code ec, std::size_t /*length*/) {
+        if (ec) {
+          /* D9: a failed write = a dead peer — tear the session down so its
+           * slot frees, instead of leaving a zombie holding it. */
+          BOOST_LOG_TRIVIAL(debug)
+              << "rtsp_server:: write failed (" << ec.message()
+              << "), closing session";
+          stop();
+          return;
+        }
+        touch();
+        write_queue_.pop_front();
+        if (!write_queue_.empty()) {
+          write_next();
         }
       });
 }
 
+std::string RtspSession::peer_str() {
+  boost::system::error_code ec;
+  auto ep = socket_.remote_endpoint(ec);
+  if (ec) {
+    return "<disconnected>";
+  }
+  std::stringstream ss;
+  ss << ep;
+  return ss.str();
+}
+
 void RtspSession::start() {
   BOOST_LOG_TRIVIAL(debug) << "rtsp_server:: starting session with "
-                           << socket_.remote_endpoint();
+                           << peer_str();
   read_request();
 }
 
 void RtspSession::stop() {
   BOOST_LOG_TRIVIAL(debug) << "rtsp_server:: stopping session with "
-                           << socket_.remote_endpoint();
-  socket_.close();
+                           << peer_str();
+  boost::system::error_code ec;
+  socket_.close(ec);
 }

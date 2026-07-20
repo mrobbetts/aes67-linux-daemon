@@ -22,6 +22,7 @@
 #include <boost/asio.hpp>
 #include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <iostream>
 #include <memory>
 #include <unordered_set>
@@ -36,8 +37,7 @@ using second_t = duration<double, std::ratio<1> >;
 
 class RtspSession : public std::enable_shared_from_this<RtspSession> {
  public:
-  constexpr static uint16_t max_length = 4096;       // byte
-  constexpr static uint16_t session_tout_secs = 10;  // sec
+  constexpr static uint16_t max_length = 4096;  // byte
 
   RtspSession(std::shared_ptr<Config> config,
               std::shared_ptr<SessionManager> session_manager,
@@ -53,18 +53,45 @@ class RtspSession : public std::enable_shared_from_this<RtspSession> {
   void start();
   void stop();
 
-  bool announce(uint8_t source_id,
+  /* D9: POST an announce onto the session's io executor. Callable from any
+   * thread (the SessionManager observers run on the worker/REST threads);
+   * every touch of session state happens on the io thread, and the push is
+   * QUEUED behind any in-flight request/response instead of being silently
+   * dropped mid-request — a dropped push was a receiver missing a re-rate
+   * SDP update. */
+  void announce(uint8_t source_id,
                 const std::string& name,
                 const std::string& sdp,
                 const std::string& address,
                 uint16_t port);
+
+  /* D9: last io activity (reads, writes, session start) — the server's
+   * eviction policy keys on this. Written only on the io thread; read from
+   * the accept handler (same thread) and, harmlessly stale, by logs. */
+  std::chrono::time_point<std::chrono::steady_clock> last_activity() const {
+    return last_activity_;
+  }
 
  private:
   bool process_request();
   void build_response(const std::string& url);
   void read_request();
   void send_error(int status_code, const std::string& description);
-  void send_response(const std::string& response);
+  /* io-thread only: enqueue on the per-session write queue. Serializes
+   * async_write ops — two in flight on one socket interleave their bytes and
+   * corrupt the RTSP stream (a response racing an announce). */
+  void send_response(std::string response);
+  void write_next();
+  void announce_io(uint8_t source_id,
+                   const std::string& name,
+                   const std::string& sdp,
+                   const std::string& address,
+                   uint16_t port);
+  void touch() { last_activity_ = std::chrono::steady_clock::now(); }
+  /* remote_endpoint() THROWS on a dead socket — an uncaught throw in a
+   * handler kills io_service::run() and with it the whole RTSP server. */
+  std::string peer_str();
+
   std::shared_ptr<Config> config_;
   std::shared_ptr<SessionManager> session_manager_;
   tcp::socket socket_;
@@ -76,6 +103,10 @@ class RtspSession : public std::enable_shared_from_this<RtspSession> {
   int32_t announce_cseq_{0};
   /* set with the ids described on this session */
   std::unordered_set<uint8_t> source_ids_;
+  /* D9: io-thread only */
+  std::deque<std::string> write_queue_;
+  std::chrono::time_point<std::chrono::steady_clock> last_activity_{
+      std::chrono::steady_clock::now()};
 };
 
 class RtspServer {
@@ -100,8 +131,21 @@ class RtspServer {
   }
   bool init() {
     accept();
-    /* start rtsp server on a separate thread */
-    res_ = std::async([this]() { io_service_.run(); });
+    /* start rtsp server on a separate thread. D9: run() inside a catch-log
+     * loop — an exception escaping a handler used to end run() and silently
+     * kill RTSP service for the daemon's remaining lifetime. */
+    res_ = std::async([this]() {
+      for (;;) {
+        try {
+          io_service_.run();
+          break;
+        } catch (const std::exception& e) {
+          BOOST_LOG_TRIVIAL(error)
+              << "rtsp_server:: exception escaped a handler, resuming: "
+              << e.what();
+        }
+      }
+    });
 
     session_manager_->add_source_observer(
         SessionManager::SourceObserverType::add_source,
@@ -146,8 +190,9 @@ class RtspServer {
 #endif
   std::shared_ptr<SessionManager> session_manager_;
   std::shared_ptr<Config> config_;
+  /* D9: slots hold weak refs; liveness is per-session last_activity() (the
+   * old parallel start-point vector was dead weight — never consulted). */
   std::vector<std::weak_ptr<RtspSession> > sessions_{session_num_max};
-  std::vector<time_point<steady_clock> > sessions_start_point_{session_num_max};
   tcp::acceptor acceptor_;
   tcp::socket socket_{io_service_};
   std::future<void> res_;
