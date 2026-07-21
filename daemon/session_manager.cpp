@@ -44,6 +44,26 @@
 #include "session_manager.hpp"
 #include "interface.hpp"
 
+namespace {
+/* D4: observer notifications collected under a lock, fired after it is
+ * released. Declare an instance BEFORE the unique_lock: destruction runs in
+ * reverse order, so the lock is released first and the notifications fire
+ * lock-free — on every return path, exceptions included. Notifications fire
+ * in the order they were added. */
+class DeferredNotifications {
+ public:
+  void add(std::function<void()> fn) { fns_.push_back(std::move(fn)); }
+  ~DeferredNotifications() {
+    for (auto& fn : fns_) {
+      fn();
+    }
+  }
+
+ private:
+  std::vector<std::function<void()>> fns_;
+};
+}  // namespace
+
 static uint8_t get_codec_word_length(std::string_view codec) {
   if (codec == "L16") {
     return 2;
@@ -1313,11 +1333,8 @@ void SessionManager::add_sink_observer(SinkObserverType type,
   }
 }
 
-void SessionManager::on_add_source(const StreamSource& source,
-                                   const StreamInfo& info) {
-  for (const auto& cb : add_source_observers_) {
-    cb(source.id, source.name, get_source_sdp_(source.id, info));
-  }
+std::function<void()> SessionManager::on_add_source(const StreamSource& source,
+                                                    const StreamInfo& info) {
   if (IN_MULTICAST(info.stream[0].m_ui32DestIP)) {
     igmp_[0].join(config_->get_ip_addr_str(),
                   ip::address_v4(info.stream[0].m_ui32DestIP).to_string());
@@ -1328,12 +1345,17 @@ void SessionManager::on_add_source(const StreamSource& source,
     }
   }
   source_names_[source.name] = source.id;
+  /* D4: payload captured BY VALUE under the lock (the map entry may mutate or
+   * vanish before the deferred fire); observers run after the lock releases. */
+  return [observers = add_source_observers_, id = source.id,
+          name = source.name, sdp = get_source_sdp_(source.id, info)]() {
+    for (const auto& cb : observers) {
+      cb(id, name, sdp);
+    }
+  };
 }
 
-void SessionManager::on_remove_source(const StreamInfo& info) {
-  for (const auto& cb : remove_source_observers_) {
-    cb((uint8_t)info.stream[0].m_uiId, info.stream[0].m_cName, {});
-  }
+std::function<void()> SessionManager::on_remove_source(const StreamInfo& info) {
   if (IN_MULTICAST(info.stream[0].m_ui32DestIP)) {
     igmp_[0].leave(config_->get_ip_addr_str(),
                    ip::address_v4(info.stream[0].m_ui32DestIP).to_string());
@@ -1344,6 +1366,13 @@ void SessionManager::on_remove_source(const StreamInfo& info) {
     }
   }
   source_names_.erase(info.stream[0].m_cName);
+  return [observers = remove_source_observers_,
+          id = (uint8_t)info.stream[0].m_uiId,
+          name = std::string(info.stream[0].m_cName)]() {
+    for (const auto& cb : observers) {
+      cb(id, name, {});
+    }
+  };
 }
 
 std::error_code SessionManager::add_source(const StreamSource& source) {
@@ -1487,6 +1516,7 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
   info.session_version = info.session_id + g_session_version++;
   // info.m_ui32PlayOutDelay = 0; // only for Sink
 
+  DeferredNotifications notify;  /* D4: fires AFTER the lock releases */
   std::unique_lock sources_lock(sources_mutex_);
   auto const it = sources_.find(source.id);
   if (it != sources_.end()) {
@@ -1499,7 +1529,7 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
       if ((*it).second.st20227_enabled) {
         (void)driver_->remove_rtp_stream((*it).second.handle[1]);
       }
-      on_remove_source((*it).second);
+      notify.add(on_remove_source((*it).second));
     }
   } else if (source_names_.find(source.name) != source_names_.end()) {
     BOOST_LOG_TRIVIAL(error)
@@ -1565,7 +1595,7 @@ std::error_code SessionManager::add_source(const StreamSource& source) {
         info.st20227_enabled = true;
       }
     }
-    on_add_source(source, info);
+    notify.add(on_add_source(source, info));
   }
 
   // update source map
@@ -1715,6 +1745,7 @@ std::error_code SessionManager::remove_source(uint32_t id) {
     return DaemonErrc::invalid_stream_id;
   }
 
+  DeferredNotifications notify;  /* D4: fires AFTER the lock releases */
   std::unique_lock sources_lock(sources_mutex_);
   auto const it = sources_.find(id);
   if (it == sources_.end()) {
@@ -1730,7 +1761,7 @@ std::error_code SessionManager::remove_source(uint32_t id) {
       ret = driver_->remove_rtp_stream(info.handle[1]);
     }
     if (!ret) {
-      on_remove_source(info);
+      notify.add(on_remove_source(info));
     }
   }
   if (!ret) {
@@ -1748,11 +1779,8 @@ uint8_t SessionManager::get_sink_id(const std::string& name) const {
   return it != sink_names_.end() ? it->second : (stream_id_max + 1);
 }
 
-void SessionManager::on_add_sink(const StreamSink& sink,
-                                 const StreamInfo& info) {
-  for (const auto& cb : add_sink_observers_) {
-    cb(sink.id, sink.name);
-  }
+std::function<void()> SessionManager::on_add_sink(const StreamSink& sink,
+                                                  const StreamInfo& info) {
   if (IN_MULTICAST(info.stream[0].m_ui32DestIP)) {
     igmp_[0].join(config_->get_ip_addr_str(),
                   ip::address_v4(info.stream[0].m_ui32DestIP).to_string());
@@ -1763,12 +1791,14 @@ void SessionManager::on_add_sink(const StreamSink& sink,
     }
   }
   sink_names_[sink.name] = sink.id;
+  return [observers = add_sink_observers_, id = sink.id, name = sink.name]() {
+    for (const auto& cb : observers) {
+      cb(id, name);
+    }
+  };
 }
 
-void SessionManager::on_remove_sink(const StreamInfo& info) {
-  for (const auto& cb : remove_sink_observers_) {
-    cb((uint8_t)info.stream[0].m_uiId, info.stream[0].m_cName);
-  }
+std::function<void()> SessionManager::on_remove_sink(const StreamInfo& info) {
   if (IN_MULTICAST(info.stream[0].m_ui32DestIP)) {
     igmp_[0].leave(config_->get_ip_addr_str(),
                    ip::address_v4(info.stream[0].m_ui32DestIP).to_string());
@@ -1779,6 +1809,13 @@ void SessionManager::on_remove_sink(const StreamInfo& info) {
     }
   }
   sink_names_.erase(info.stream[0].m_cName);
+  return [observers = remove_sink_observers_,
+          id = (uint8_t)info.stream[0].m_uiId,
+          name = std::string(info.stream[0].m_cName)]() {
+    for (const auto& cb : observers) {
+      cb(id, name);
+    }
+  };
 }
 
 std::error_code SessionManager::add_sink(const StreamSink& sink) {
@@ -1985,6 +2022,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
     }
   }
 
+  DeferredNotifications notify;  /* D4: fires AFTER the lock releases */
   std::unique_lock sinks_lock(sinks_mutex_);
   auto const it = sinks_.find(sink.id);
   if (it != sinks_.end()) {
@@ -1996,7 +2034,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
     if ((*it).second.st20227_enabled) {
       (void)driver_->remove_rtp_stream((*it).second.handle[1]);
     }
-    on_remove_sink((*it).second);
+    notify.add(on_remove_sink((*it).second));
   } else if (sink_names_.find(sink.name) != sink_names_.end()) {
     BOOST_LOG_TRIVIAL(error)
         << "session_manager:: sink name " << sink.name << " is in use";
@@ -2051,7 +2089,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
   } else {
     info.st20227_enabled = false;
   }
-  on_add_sink(sink, info);
+  notify.add(on_add_sink(sink, info));
 
   // update sinks map
   sinks_[sink.id] = info;
@@ -2069,6 +2107,7 @@ std::error_code SessionManager::remove_sink(uint32_t id) {
     return DaemonErrc::stream_id_in_use;
   }
 
+  DeferredNotifications notify;  /* D4: fires AFTER the lock releases */
   std::unique_lock sinks_lock(sinks_mutex_);
   auto const it = sinks_.find(id);
   if (it == sinks_.end()) {
@@ -2083,7 +2122,7 @@ std::error_code SessionManager::remove_sink(uint32_t id) {
     ret = driver_->remove_rtp_stream(info.handle[1]);
   }
   if (!ret) {
-    on_remove_sink(info);
+    notify.add(on_remove_sink(info));
     sinks_.erase(id);
     mark_status_dirty();  /* D7: sink removed */
   }
@@ -2592,14 +2631,24 @@ void SessionManager::reconcile_rate_applied_(uint8_t pcm_id, uint32_t rate) {
 
 void SessionManager::on_update_sources() {
   // trigger sources SDP file update
-  sources_mutex_.lock();
-  for (auto& [id, info] : sources_) {
-    for (const auto& cb : update_source_observers_) {
+  /* D4: RAII lock (the raw lock()/unlock() leaked the mutex on an observer
+   * throw), snapshot under it, fire after release. Also fixes the version
+   * bump: it was ++ per OBSERVER per source — accidentally correct only while
+   * exactly one update observer is registered — now once per source. */
+  std::vector<std::tuple<uint8_t, std::string, std::string>> updates;
+  {
+    std::unique_lock sources_lock(sources_mutex_);
+    for (auto& [id, info] : sources_) {
       info.session_version++;
-      cb(id, info.stream[0].m_cName, get_source_sdp_(id, info));
+      updates.emplace_back(static_cast<uint8_t>(id), info.stream[0].m_cName,
+                           get_source_sdp_(id, info));
     }
   }
-  sources_mutex_.unlock();
+  for (const auto& [id, name, sdp] : updates) {
+    for (const auto& cb : update_source_observers_) {
+      cb(id, name, sdp);
+    }
+  }
   g_session_version++;
 }
 
@@ -2610,13 +2659,22 @@ void SessionManager::reannounce_pcm_sources_(uint8_t pcm_id) {
    * here is what makes the receiver treat it as a new SDP and re-pull. Mirrors
    * on_update_sources' mechanism (regenerate SDP + notify the RTSP/SAP/file
    * observers), scoped to the one pcm. Worker context, not holding cards_mutex_. */
-  std::unique_lock sources_lock(sources_mutex_);
-  for (auto& [id, info] : sources_) {
-    if (static_cast<uint8_t>(info.stream[0].m_uiPCMId) != pcm_id)
-      continue;
-    info.session_version++;
-    for (const auto& cb : update_source_observers_)
-      cb(id, info.stream[0].m_cName, get_source_sdp_(id, info));
+  /* D4: snapshot under the lock, fire after release. */
+  std::vector<std::tuple<uint8_t, std::string, std::string>> updates;
+  {
+    std::unique_lock sources_lock(sources_mutex_);
+    for (auto& [id, info] : sources_) {
+      if (static_cast<uint8_t>(info.stream[0].m_uiPCMId) != pcm_id)
+        continue;
+      info.session_version++;
+      updates.emplace_back(static_cast<uint8_t>(id), info.stream[0].m_cName,
+                           get_source_sdp_(id, info));
+    }
+  }
+  for (const auto& [id, name, sdp] : updates) {
+    for (const auto& cb : update_source_observers_) {
+      cb(id, name, sdp);
+    }
   }
 }
 
