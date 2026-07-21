@@ -368,11 +368,20 @@ class SessionManager {
       const std::list<RemoteSource>& sources_list);
   void update_sinks();
 
-  void on_add_source(const StreamSource& source, const StreamInfo& info);
-  void on_remove_source(const StreamInfo& info);
+  /* D4: the on_* hooks do the MODEL work (name maps, IGMP) under the caller's
+   * lock and RETURN the observer notification as a closure over value-captured
+   * payloads. Callers collect these in a DeferredNotifications guard declared
+   * before their unique_lock, so notifications always fire after the lock is
+   * released — structurally, on every return path, instead of by the "observers
+   * must only signal" convention that produced the EDEADLK crash-loop and let
+   * a blocking observer (avahi) stall every reader of the maps. */
+  std::function<void()> on_add_source(const StreamSource& source,
+                                      const StreamInfo& info);
+  std::function<void()> on_remove_source(const StreamInfo& info);
 
-  void on_add_sink(const StreamSink& sink, const StreamInfo& info);
-  void on_remove_sink(const StreamInfo& info);
+  std::function<void()> on_add_sink(const StreamSink& sink,
+                                    const StreamInfo& info);
+  std::function<void()> on_remove_sink(const StreamInfo& info);
 
   void on_ptp_status_changed(const std::string& status) const;
 
