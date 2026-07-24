@@ -2912,7 +2912,16 @@ bool SessionManager::worker() {
           }
         }
       }
-      ptp_interval = 10;
+      /* #24 (resolved as cadence, not events): the poll IS the design — the
+       * locked intent-in/truth-out principle keeps a queryable-state channel
+       * for recovery, and the one place promptness truly matters (a rate
+       * apply) already has its dedicated K2U event. Clock-state transitions
+       * happen in softirq, where the sleeping K2U send can't run, so pushing
+       * them would need workqueue machinery for what is, after D5 made this
+       * poll a full reconciler, purely a freshness concern. 3 s aligns with
+       * the WebUI's own poll (status worst-case staleness ~6 s, was ~13 s);
+       * the cost is ~7 sub-millisecond netlink round-trips per pass. */
+      ptp_interval = 3;
     }
 
     // check if it's time to send sap announcements
