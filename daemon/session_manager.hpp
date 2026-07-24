@@ -366,7 +366,16 @@ class SessionManager {
    * correctly ignores. Flap-free: converges once pcm rate == source rate. */
   std::list<StreamSink> get_rate_follow_sinks(
       const std::list<RemoteSource>& sources_list);
+  /* D10 (audit M7): update_sinks is a sequence of named phases — cancel
+   * reverted re-rates, collect the changed sinks, apply each — with the
+   * per-sink POLICY extracted into a pure decision function (see
+   * decide_rerate in the cpp) and the effects in apply_sink_update_. All
+   * worker-thread only, like the monolith they replace. */
   void update_sinks();
+  void cancel_reverted_rerates_(const std::list<RemoteSource>& remote_sources);
+  std::list<StreamSink> collect_sink_updates_(
+      const std::list<RemoteSource>& remote_sources);
+  void apply_sink_update_(StreamSink& sink);
 
   /* D4: the on_* hooks do the MODEL work (name maps, IGMP) under the caller's
    * lock and RETURN the observer notification as a closure over value-captured
