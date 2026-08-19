@@ -29,6 +29,7 @@
 #include <boost/property_tree/ptree.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>  /* D7: std::rename / std::remove for atomic status writes */
 #include <experimental/map>
 #include <fstream>
@@ -225,7 +226,19 @@ bool SessionManager::parse_sdp(const std::string& sdp, StreamInfo& info) const {
                 /* a=sync-time:0 */
                 info.stream[mid].m_ui32RTPTimestampOffset = std::stoul(value);
               } else if (name == "framecount") {
-                /* a=framecount:64-192 */
+                /* a=framecount:<n> or <min>-<max> (RAVENNA): samples per
+                 * packet. ptime is authoritative when present (its branch
+                 * overwrites unconditionally); framecount fills in when it
+                 * is absent — the VAD omits ptime at 4FS/44k1-family rates,
+                 * which used to leave MaxSamplesPerPacket 0 and the sink
+                 * frame size at the max_tic_frame_size fallback (1024),
+                 * tripping the kernel's delay >= frame-size rule. */
+                if (info.stream[mid].m_ui32MaxSamplesPerPacket == 0) {
+                  auto dash = value.find('-');
+                  info.stream[mid].m_ui32MaxSamplesPerPacket = std::stoul(
+                      dash == std::string::npos ? value
+                                                : value.substr(dash + 1));
+                }
               } else if (name == "ptime") {
                 /* a=mediaclk:ptime=4.35374165 */
                 info.stream[mid].m_ui32MaxSamplesPerPacket =
@@ -462,20 +475,28 @@ StreamSource SessionManager::get_source_(uint8_t id,
 }
 
 StreamSink SessionManager::get_sink_(uint8_t id, const StreamInfo& info) const {
-  return {id,
-          info.stream[0].m_cName,
-          info.io,
-          info.sink_use_sdp,
-          info.sink_source,
-          info.sink_sdp,
-          info.stream[0].m_ui32PlayOutDelay,
-          info.ignore_refclk_gmid,
-          {info.stream[0].m_aui32Routing,
-           info.stream[0].m_aui32Routing + info.stream[0].m_byNbOfChannels},
-          /* 2026-06-09 review fix: see get_source_ — without this, SAP
-           * auto-update (get_updated_sinks -> add_sink) live-migrated
-           * sinks to pcm 0 on any upstream SDP version bump. */
-          static_cast<uint8_t>(info.stream[0].m_uiPCMId)};
+  StreamSink sink{id,
+                  info.stream[0].m_cName,
+                  info.io,
+                  info.sink_use_sdp,
+                  info.sink_source,
+                  info.sink_sdp,
+                  info.stream[0].m_ui32PlayOutDelay,
+                  info.ignore_refclk_gmid,
+                  {info.stream[0].m_aui32Routing,
+                   info.stream[0].m_aui32Routing +
+                       info.stream[0].m_byNbOfChannels},
+                  /* 2026-06-09 review fix: see get_source_ — without this, SAP
+                   * auto-update (get_updated_sinks -> add_sink) live-migrated
+                   * sinks to pcm 0 on any upstream SDP version bump. */
+                  static_cast<uint8_t>(info.stream[0].m_uiPCMId)};
+  /* canonical delay + attach reconciliation state ride along so updates and
+   * retries preserve the user's chosen TIME margin, and consumers (REST,
+   * webui) see why a sink is not flowing */
+  sink.delay_ms = info.sink_delay_ms;
+  sink.attached = info.sink_attached;
+  sink.detach_reason = info.sink_detach_reason;
+  return sink;
 }
 
 int SessionManager::alloc_card_handle_() const {
@@ -2000,6 +2021,33 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
       info.stream[mid].m_ui32FrameSize = config_->get_max_tic_frame_size();
     }
 
+    /* Playout delay: the canonical form is TIME (StreamSink::delay_ms) so a
+     * rate-following sink keeps the margin the user chose across re-rates —
+     * a fixed sample count silently shrank with rising rate until it crossed
+     * the kernel's floor. A legacy samples-only sink is migrated here, read
+     * at this SDP's rate. The kernel refuses delay < frame size (one max
+     * packet must fit), so the effective count is clamped up LOUDLY rather
+     * than letting the add fail. */
+    {
+      const uint32_t rate = info.stream[0].m_ui32SamplingRate;
+      const double delay_ms =
+          sink.delay_ms > 0
+              ? sink.delay_ms
+              : static_cast<double>(sink.delay) * 1000.0 / rate;
+      uint32_t delay_samples =
+          static_cast<uint32_t>(std::ceil(delay_ms * rate / 1000.0));
+      if (delay_samples < info.stream[mid].m_ui32FrameSize) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "session_manager:: sink " << std::to_string(sink.id)
+            << " playout delay " << delay_samples << " below frame size "
+            << info.stream[mid].m_ui32FrameSize << " at " << rate
+            << " Hz — clamped up (kernel requires delay >= one packet)";
+        delay_samples = info.stream[mid].m_ui32FrameSize;
+      }
+      info.stream[mid].m_ui32PlayOutDelay = delay_samples;
+      info.sink_delay_ms = delay_ms;
+    }
+
     BOOST_LOG_TRIVIAL(info)
         << "session_manager:: media " << mid << " sink addr "
         << ip::address_v4(info.stream[mid].m_ui32DestIP).to_string() << ":"
@@ -2029,23 +2077,55 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
     BOOST_LOG_TRIVIAL(info)
         << "session_manager:: sink id " << std::to_string(sink.id)
         << " is in use, updating";
-    // remove previous stream
-    (void)driver_->remove_rtp_stream((*it).second.handle[0]);
-    if ((*it).second.st20227_enabled) {
-      (void)driver_->remove_rtp_stream((*it).second.handle[1]);
+    /* remove previous stream — unless the record is detached (a standing
+     * intent from an earlier refused add: its handles are already gone and
+     * on_remove_sink already ran when it detached) */
+    if ((*it).second.sink_attached) {
+      (void)driver_->remove_rtp_stream((*it).second.handle[0]);
+      if ((*it).second.st20227_enabled) {
+        (void)driver_->remove_rtp_stream((*it).second.handle[1]);
+      }
+      notify.add(on_remove_sink((*it).second));
     }
-    notify.add(on_remove_sink((*it).second));
   } else if (sink_names_.find(sink.name) != sink_names_.end()) {
     BOOST_LOG_TRIVIAL(error)
         << "session_manager:: sink name " << sink.name << " is in use";
     return DaemonErrc::stream_name_in_use;
   }
 
+  /* On a refused UPDATE the sink becomes a DETACHED STANDING INTENT instead
+   * of being erased (the old erase is why a refused re-add — e.g. the silent
+   * kernel is_valid -401 — could only be fixed by manually re-creating the
+   * sink). The record keeps this add's parse (current SDP, delay, map) with
+   * no valid handles; retry_detached_sinks_ re-attempts it, the SDP-update
+   * flow heals it on the next announce, and /api/sinks names the reason. */
+  auto detach = [&](const std::error_code& ec) {
+    info.handle[0] = info.handle[1] = 0;
+    info.st20227_enabled = false;
+    info.sink_attached = false;
+    info.sink_detach_reason = "driver refused add at " +
+                              std::to_string(info.stream[0].m_ui32SamplingRate) +
+                              " Hz: " + ec.message();
+    /* retries re-detach with the same reason: keep those quiet (DEBUG) and
+     * don't re-dirty the status file for an unchanged standing state */
+    const bool changed =
+        !(it != sinks_.end() && !(*it).second.sink_attached &&
+          (*it).second.sink_detach_reason == info.sink_detach_reason);
+    sinks_[sink.id] = info;
+    if (changed) {
+      mark_status_dirty();
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: sink " << std::to_string(sink.id)
+          << " DETACHED (standing intent, will retry): "
+          << info.sink_detach_reason;
+    }
+  };
+
   auto ret = driver_->add_rtp_stream(sink.pcm, info.stream[0], info.handle[0]);
   if (ret) {
     if (it != sinks_.end()) {
       /* update operation failed */
-      sinks_.erase(sink.id);
+      detach(ret);
     }
     return ret;
   }
@@ -2080,7 +2160,7 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
         (void)driver_->remove_rtp_stream(info.handle[0]);
         if (it != sinks_.end()) {
           /* update operation failed */
-          sinks_.erase(sink.id);
+          detach(ret);
         }
         return ret;
       }
@@ -2117,6 +2197,13 @@ std::error_code SessionManager::remove_sink(uint32_t id) {
   }
 
   const auto& info = (*it).second;
+  if (!info.sink_attached) {
+    /* detached standing intent: no kernel stream to remove and on_remove_sink
+     * already ran at detach time — just drop the record */
+    sinks_.erase(id);
+    mark_status_dirty();  /* D7: sink removed */
+    return std::error_code{};
+  }
   auto ret = driver_->remove_rtp_stream(info.handle[0]);
   if (!ret && info.st20227_enabled) {
     ret = driver_->remove_rtp_stream(info.handle[1]);
@@ -2449,6 +2536,29 @@ void SessionManager::update_sinks() {
   last_sink_update_ = last_update;
 }
 
+void SessionManager::retry_detached_sinks_() {
+  /* snapshot detached intents under the shared lock, retry outside it
+   * (add_sink takes the unique lock itself) */
+  std::list<StreamSink> detached;
+  {
+    std::shared_lock sinks_lock(sinks_mutex_);
+    for (auto const& [id, info] : sinks_) {
+      if (!info.sink_attached) {
+        detached.emplace_back(get_sink_(id, info));
+      }
+    }
+  }
+  for (auto& sink : detached) {
+    auto ret = add_sink(sink);
+    if (!ret) {
+      BOOST_LOG_TRIVIAL(info)
+          << "session_manager:: detached sink " << std::to_string(sink.id)
+          << " re-attached";
+    }
+    /* still refused: add_sink refreshed the detach reason; stay standing */
+  }
+}
+
 /* W28: retract a stale in-place re-rate. If a pcm we armed is now already
  * at the rate its follow-source advertises (the source flapped back to the
  * live rate before the client released the device), cancel the latch so the
@@ -2478,12 +2588,20 @@ void SessionManager::cancel_reverted_rerates_(
        * SSRC — re-add it with the current SDP to re-acquire the new stream. */
       StreamSink sink = it->sink;
       sink.sdp = cur_sdp;
-      add_sink(sink);
-      BOOST_LOG_TRIVIAL(info)
-          << "session_manager:: in-place re-rate of pcm_id "
-          << (int)it->pcm_id << " cancelled — follow-source reverted to the "
-          << "live rate (" << live << " Hz); sink " << (int)sink.id
-          << " re-attached to re-acquire the restarted stream";
+      auto ec = add_sink(sink);
+      if (ec) {
+        BOOST_LOG_TRIVIAL(error)
+            << "session_manager:: in-place re-rate of pcm_id "
+            << (int)it->pcm_id << " cancelled but sink " << (int)sink.id
+            << " re-attach REFUSED (" << ec.message()
+            << ") — detached, retrying";
+      } else {
+        BOOST_LOG_TRIVIAL(info)
+            << "session_manager:: in-place re-rate of pcm_id "
+            << (int)it->pcm_id << " cancelled — follow-source reverted to the "
+            << "live rate (" << live << " Hz); sink " << (int)sink.id
+            << " re-attached to re-acquire the restarted stream";
+      }
       it = pending_rerates_.erase(it);
     } else {
       ++it;
@@ -2679,11 +2797,22 @@ void SessionManager::reconcile_rate_applied_(uint8_t pcm_id, uint32_t rate) {
       pending_rerates_.begin(), pending_rerates_.end(),
       [pcm_id](const PendingRerate& p) { return p.pcm_id == pcm_id; });
   if (it != pending_rerates_.end()) {
-    add_sink(it->sink);
-    BOOST_LOG_TRIVIAL(info)
-        << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
-        << " applied; sink " << (int)it->sink.id
-        << " re-added at " << rate << " Hz";
+    auto ec = add_sink(it->sink);
+    if (ec) {
+      /* the sink is now a detached standing intent (add_sink keeps it and
+       * the retry pass re-attempts) — but say what actually happened
+       * instead of claiming success (2026-08-19: this exact line reported
+       * "re-added" over a refused add and the sinks silently vanished) */
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
+          << " applied but sink " << (int)it->sink.id
+          << " re-add REFUSED (" << ec.message() << ") — detached, retrying";
+    } else {
+      BOOST_LOG_TRIVIAL(info)
+          << "session_manager:: in-place re-rate of pcm_id " << (int)pcm_id
+          << " applied; sink " << (int)it->sink.id
+          << " re-added at " << rate << " Hz";
+    }
     pending_rerates_.erase(it);
   } else {
     BOOST_LOG_TRIVIAL(info)
@@ -3010,6 +3139,14 @@ bool SessionManager::worker() {
     }
 
     update_sinks();
+    /* attach reconciliation: detached sinks are standing intents — retry on
+     * a slow cadence (~5 s at the loop's ~1 s pace). Deterministic refusals
+     * stay quiet after the first ERROR (reason-deduped) and visible on
+     * /api/sinks; transient ones (slots, re-rate races) self-heal here. */
+    if (++detached_retry_tick_ >= 5) {
+      detached_retry_tick_ = 0;
+      retry_detached_sinks_();
+    }
     // W15: wait ~1 s OR until the kernel reports an armed re-rate applied (the
     // event wakes us immediately); re-attaches deferred sinks. Replaces the old
     // fixed 1 s sleep, so the loop is event-paced for re-rates.

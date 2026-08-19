@@ -165,6 +165,10 @@ std::string sink_to_json(const StreamSink& sink) {
      << ",\n    \"source\": \"" << escape_json(sink.source) << "\""
      << ",\n    \"sdp\": \"" << escape_json(sink.sdp) << "\""
      << ",\n    \"delay\": " << sink.delay
+     << ",\n    \"delay_ms\": " << sink.delay_ms
+     << ",\n    \"attached\": " << std::boolalpha << sink.attached
+     << ",\n    \"detach_reason\": \"" << escape_json(sink.detach_reason)
+     << "\""
      << ",\n    \"ignore_refclk_gmid\": " << std::boolalpha
      << sink.ignore_refclk_gmid
      << ",\n    \"pcm\": " << unsigned(sink.pcm)
@@ -762,7 +766,12 @@ StreamSink json_to_sink(const std::string& id, const std::string& json) {
     sink.source = remove_undesired_chars(pt.get<std::string>("source"));
     sink.use_sdp = pt.get<bool>("use_sdp");
     sink.sdp = remove_undesired_chars(pt.get<std::string>("sdp"));
-    sink.delay = pt.get<uint32_t>("delay");
+    sink.delay = pt.get<uint32_t>("delay", 0);
+    /* canonical playout delay as TIME; optional. When set it wins over the
+     * legacy `delay` samples (which are then interpreted only as a migration
+     * source at first attach). attached/detach_reason are daemon-owned
+     * reconciliation state: ignored on input. */
+    sink.delay_ms = pt.get<double>("delay_ms", 0);
     sink.ignore_refclk_gmid = pt.get<bool>("ignore_refclk_gmid");
     /* multi-rate Stage 1: optional, defaults to PCM 0 for back-compat. */
     sink.pcm = pt.get<uint8_t>("pcm", 0);
