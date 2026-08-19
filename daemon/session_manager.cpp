@@ -2236,6 +2236,12 @@ std::error_code SessionManager::get_sink_status(
 
   TRTP_stream_status status;
   const auto& info = (*it).second;
+  if (!info.sink_attached) {
+    /* detached standing intent: no kernel stream to query — report a zeroed
+     * (idle) status instead of poking the driver with a stale handle */
+    sink_status = SinkStreamStatus{};
+    return std::error_code{};
+  }
   auto ret = driver_->get_rtp_stream_status(info.handle[0], status);
   if (!ret) {
     sink_status.is_rtp_seq_id_error = status.u.flags & 0x01;
