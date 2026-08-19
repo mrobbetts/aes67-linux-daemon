@@ -73,6 +73,20 @@ struct StreamSink {
    * and served over HTTP. The streamer captures the lowest-pcm streamed sink's
    * PCM (one capture context at a time). Optional in JSON, defaults to false. */
   bool stream{false};
+  /* Playout delay as TIME — the canonical form for a rate-following sink
+   * (a sample count silently shrinks as the rate rises: 384 samples is
+   * 8.7 ms at 44k1 but 2.2 ms at 176k4, under one max-size packet). When
+   * > 0 it wins over `delay`; a legacy samples-only sink is migrated on
+   * its first attach (samples read at that attach's SDP rate). The
+   * effective sample count is re-derived at every attach and reported
+   * back through `delay`. Optional in JSON, defaults to 0 (unset). */
+  double delay_ms{0};
+  /* Attach reconciliation state (read-only in JSON; ignored on input).
+   * attached=false means the kernel holds no stream for this sink — the
+   * record is a STANDING INTENT retried by the daemon, and detach_reason
+   * says why the last attempt was refused. */
+  bool attached{true};
+  std::string detach_reason;
 };
 
 /* W10.2 runtime multi-card. A Card is one ALSA snd_card = one PTP clock domain
@@ -187,6 +201,13 @@ struct StreamInfo {
   bool sink_use_sdp{true};
   std::string sink_source;
   std::string sink_sdp;
+  /* canonical playout delay (ms) — survives re-rates; see StreamSink::delay_ms */
+  double sink_delay_ms{0};
+  /* sink attach reconciliation: a driver-refused (re)add keeps the record as
+   * a standing intent instead of erasing it. When false, handle[] is invalid
+   * and sink_detach_reason names the refusal; the main loop retries. */
+  bool sink_attached{true};
+  std::string sink_detach_reason;
   uint32_t session_id{0};
   uint32_t session_version{0};
   SDPOrigin origin;
@@ -372,6 +393,11 @@ class SessionManager {
    * decide_rerate in the cpp) and the effects in apply_sink_update_. All
    * worker-thread only, like the monolith they replace. */
   void update_sinks();
+  /* attach reconciliation: re-attempt every detached sink (driver refused a
+   * previous (re)add). Called from the main loop on a slow cadence; also
+   * healed for free by the SDP-update flow when a source re-announces. */
+  void retry_detached_sinks_();
+  int detached_retry_tick_{0};
   void cancel_reverted_rerates_(const std::list<RemoteSource>& remote_sources);
   std::list<StreamSink> collect_sink_updates_(
       const std::list<RemoteSource>& remote_sources);

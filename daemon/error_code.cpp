@@ -37,7 +37,7 @@ std::string DriverErrCategory::message(int ev) const {
     case DriverErrc::invalid_value:
       return "invalid value specified";
     case DriverErrc::command_failed:
-      return "command failed";
+      return "refused by driver (validation failed or no free stream slot)";
     case DriverErrc::command_not_found:
       return "command not found";
     case DriverErrc::unknown_command:
