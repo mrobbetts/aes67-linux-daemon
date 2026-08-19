@@ -57,7 +57,16 @@ class SinkEdit extends Component {
       pcm: this.props.sink.pcm !== undefined ? this.props.sink.pcm : 0,
       pcmChannels: 64,  // the selected pcm's input count; updated by the picker
       io: this.props.sink.io,
-      delay: this.props.sink.delay,
+      /* canonical delay is TIME (ms). Legacy sinks that predate delay_ms are
+         converted from their sample count at the SDP's rate for display. */
+      delayMs: this.props.sink.delay_ms > 0
+        ? this.props.sink.delay_ms
+        : (() => {
+            const m = (this.props.sink.sdp || '').match(/L(?:16|24|32)\/(\d+)/);
+            return m && this.props.sink.delay
+              ? Math.round(this.props.sink.delay * 100000 / parseInt(m[1], 10)) / 100
+              : 8;
+          })(),
       ignoreRefclkGmid: this.props.sink.ignore_refclk_gmid,
       stream: this.props.sink.stream !== undefined ? this.props.sink.stream : false,
       useSdp: this.props.sink.use_sdp,
@@ -100,7 +109,7 @@ class SinkEdit extends Component {
       this.state.id,
       this.state.name,
       this.state.io,
-      this.state.delay,
+      this.state.delayMs,
       this.state.useSdp,
       this.state.source ? this.state.source : '',
       this.state.sdp ? this.state.sdp : '',
@@ -181,6 +190,26 @@ class SinkEdit extends Component {
     // rate-match guard) and that has enough input channels -- grey out the rest.
     const m = (this.state.sdp || '').match(/a=rtpmap:\d+\s+[A-Za-z0-9]+\/(\d+)/);
     const sdpRate = m ? parseInt(m[1], 10) : 0;
+    /* Playout delay options are TIME — the daemon derives samples at each
+       attach's rate. Labels show the sample count at THIS SDP's rate, and
+       options under one max-size packet (from a=ptime / a=framecount) are
+       flagged: the daemon clamps them up (the kernel needs one packet to
+       fit inside the delay). */
+    const pt = (this.state.sdp || '').match(/a=ptime:([\d.]+)/);
+    const fc = (this.state.sdp || '').match(/a=framecount:(?:\d+-)?(\d+)/);
+    const pktSamples = pt && sdpRate
+      ? Math.ceil(parseFloat(pt[1]) * sdpRate / 1000)
+      : (fc ? parseInt(fc[1], 10) : 0);
+    const baseDelays = [1, 2, 4, 6, 8, 12, 16, 20];
+    const curDelay = parseFloat(this.state.delayMs);
+    const delayOptions = (isNaN(curDelay) || baseDelays.includes(curDelay)
+      ? baseDelays : baseDelays.concat(curDelay)).sort((a, b) => a - b);
+    const delayLabel = (ms) => {
+      if (!sdpRate) return ms + ' ms';
+      const samples = Math.ceil(ms * sdpRate / 1000);
+      return ms + ' ms — ' + samples + ' smp @ ' + (sdpRate / 1000) + ' kHz' +
+        (pktSamples && samples < pktSamples ? ' (< 1 packet, clamped up)' : '');
+    };
     return (
       <div id='sink-edit'>
         <Modal ariaHideApp={false}
@@ -224,14 +253,11 @@ class SinkEdit extends Component {
               <th align="left"> <textarea rows='15' cols='55' value={this.state.sdp} onChange={e => this.setState({sdp: e.target.value})} disabled={this.state.useSdp ? undefined : true} required/> </th>
             </tr>
             <tr>
-              <th align="left"> <label>Delay (samples) </label> </th>
+              <th align="left"> <label>Playout delay</label> </th>
               <th align="left">
-	        <select value={this.state.delay} onChange={e => this.setState({delay: e.target.value})}>
-                  <option value="192">192 - 4ms@48kHz</option>
-                  <option value="384">384 - 8ms@48kHz</option>
-                  <option value="576">576 - 12ms@48kHz</option>
-                  <option value="768">768 - 16ms@48kHz</option>
-                  <option value="960">960 - 20ms@48kHz</option>
+	        <select value={this.state.delayMs} onChange={e => this.setState({delayMs: e.target.value})}>
+                  {delayOptions.map((ms) =>
+                    <option key={ms} value={ms}>{delayLabel(ms)}</option>)}
                 </select>
               </th>
             </tr>

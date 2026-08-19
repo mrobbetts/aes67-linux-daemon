@@ -66,7 +66,13 @@ export default class RestAPI {
             return response;
           }
           console.log(this.getBaseUrl() + API + url + ' HTTP ' + response.status);
-          return Promise.reject(Error('HTTP ' + response.status));
+          /* the daemon sends a text/plain body naming the actual refusal
+             ("failed to add sink 3 : (driver) refused by driver ...") —
+             surface it instead of the bare status code */
+          return response.text().then(
+            body => Promise.reject(Error('HTTP ' + response.status +
+                                         (body ? ' — ' + body : ''))),
+            () => Promise.reject(Error('HTTP ' + response.status)));
         }
       ).catch(
         err => {
@@ -190,12 +196,15 @@ export default class RestAPI {
     });
   }
 
-  static addSink(id, name, io, delay, use_sdp, source, sdp, ignore_refclk_gmid, map, pcm, stream, is_edit) {
+  static addSink(id, name, io, delay_ms, use_sdp, source, sdp, ignore_refclk_gmid, map, pcm, stream, is_edit) {
     return this.doFetch(sink + '/' + id, {
       body: JSON.stringify({
         name: name,
         io: io,
-        delay: parseInt(delay, 10),
+        /* canonical playout delay as TIME — the daemon derives the sample
+           count at each attach's rate (a fixed sample count silently shrinks
+           as the rate rises) */
+        delay_ms: parseFloat(delay_ms),
         use_sdp: use_sdp,
         source: source,
         sdp: sdp,
