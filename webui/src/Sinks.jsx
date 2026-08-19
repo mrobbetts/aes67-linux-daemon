@@ -31,6 +31,8 @@ class SinkEntry extends Component {
     id: PropTypes.number.isRequired,
     name: PropTypes.string.isRequired,
     channels: PropTypes.number.isRequired,
+    attached: PropTypes.bool.isRequired,
+    detachReason: PropTypes.string,
     onEditClick: PropTypes.func.isRequired,
     onTrashClick: PropTypes.func.isRequired
   };
@@ -60,6 +62,11 @@ class SinkEntry extends Component {
 
   // #32: poll the sink status live (it used to be fetched once at mount).
   fetchStatus = () => {
+    /* a detached sink (driver refused the last (re)add — standing intent,
+       daemon retrying) has no kernel stream to poll */
+    if (!this.props.attached) {
+      return;
+    }
     RestAPI.getSinkStatus(this.props.id)
       .then(response => response.json())
       .then(function(status) {
@@ -174,7 +181,12 @@ class SinkEntry extends Component {
         <td> <label>{this.props.name}</label> </td>
         <td align='center'> <label>{this.props.channels}</label> </td>
         <td align='center'>
-          <label style={{color: this.state.flagsColor}}>{this.state.flags}</label>
+          {this.props.attached
+            ? <label style={{color: this.state.flagsColor}}>{this.state.flags}</label>
+            : <label style={{color: '#c00'}}
+                title={this.props.detachReason}>
+                detached — {this.props.detachReason || 'driver refused; retrying'}
+              </label>}
         </td>
         <td align='center'>
           <label style={{color: this.state.errors === 'none' ? '#888' : '#c00'}}>
@@ -316,7 +328,7 @@ class Sinks extends Component {
       'id': id,
       'name': 'ALSA Sink ' + id,
       'io': 'Audio Device',
-      'delay': 576,
+      'delay_ms': 12,
       'use_sdp': false,
       'source': RestAPI.getBaseUrl() + '/api/source/sdp/' + id,
       'sdp': '',
@@ -334,6 +346,8 @@ class Sinks extends Component {
         id={sink.id}
         channels={sink.map.length}
         name={sink.name}
+        attached={sink.attached !== false}
+        detachReason={sink.detach_reason || ''}
         onEditClick={this.onEditClick}
         onTrashClick={this.onTrashClick}
       />
