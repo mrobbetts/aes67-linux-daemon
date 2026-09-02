@@ -151,6 +151,9 @@ std::string DaemonErrCategory::message(int ev) const {
       return "card PTP domain is out of range";
     case DaemonErrc::invalid_rate_change_mode:
       return "card rate-change mode must be \"recreate\" or \"in-place\"";
+    case DaemonErrc::cards_not_managed:
+      return "card and pcm management is disabled: the daemon is in legacy "
+             "single-card mode (managed_cards is false)";
     default:
       return "(unrecognized daemon error)";
   }

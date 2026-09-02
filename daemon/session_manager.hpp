@@ -356,6 +356,14 @@ class SessionManager {
   int device_index_of(uint8_t pcm_id) const;
 
   std::error_code set_ptp_config(const PTPConfig& config);
+  /* Card topology mode (see Config::get_managed_cards). In legacy single-card
+   * mode the card/pcm mutators refuse with cards_not_managed. */
+  bool managed_cards() const { return config_->get_managed_cards(); }
+  /* Apply the live-applicable parts of a new configuration: the PTP config
+   * always; in legacy single-card mode also the implicit card's sample rate,
+   * playout delay and domain, as a configuration change applied them before
+   * cards existed. Called by the config endpoint before the file is saved. */
+  std::error_code apply_config(const Config& next);
   void get_ptp_config(PTPConfig& config) const;
   void get_ptp_status(PTPStatus& status) const;
   /* W11: per-domain status for the active domains (the Clocks view). */

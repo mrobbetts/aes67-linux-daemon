@@ -62,9 +62,10 @@ std::shared_ptr<Config> Config::parse(const std::string& filename,
 
   if (config.log_severity_ < 0 || config.log_severity_ > 5)
     config.log_severity_ = 2;
-  /* playout_delay and sample_rate are no longer daemon-wide config — they are
-   * per-PCM (validated per device_group / per add_pcm), so no top-level clamp
-   * or default here. */
+  if (config.playout_delay_ > 4000)
+    config.playout_delay_ = 4000;
+  if (config.sample_rate_ == 0)
+    config.sample_rate_ = 48000;
   if (config.tic_frame_size_at_1fs_ == 0 || config.tic_frame_size_at_1fs_ > 192)
     config.tic_frame_size_at_1fs_ = 192;
   if (config.max_tic_frame_size_ < config.tic_frame_size_at_1fs_ ||
@@ -80,8 +81,10 @@ std::shared_ptr<Config> Config::parse(const std::string& filename,
       config.streamer_player_buffer_files_num_ > 2)
     config.streamer_player_buffer_files_num_ = 1;
 
-  /* Cards/PCMs are created at runtime via REST and persisted in status.json;
-   * daemon.conf no longer declares them. */
+  /* Cards and pcms: in legacy single-card mode (managed_cards false) the one
+   * implicit card is derived from this configuration by the SessionManager;
+   * in managed mode they are created via REST and persisted in the status
+   * file. This file never declares them explicitly. */
 
   boost::system::error_code ec;
 #if BOOST_VERSION < 108700

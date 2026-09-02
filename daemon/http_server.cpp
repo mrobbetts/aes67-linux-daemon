@@ -127,15 +127,7 @@ bool HttpServer::init() {
           config_->get_log_severity() != config.get_log_severity()) {
         log_init(config);
       }
-      std::error_code ret;
-      /* playout_delay and sample_rate are no longer daemon-wide config: they
-       * are per-PCM (set at card bring-up from each PCM's own value). The only
-       * live driver config left here is PTP. */
-      if (config_->get_ptp_domain() != config.get_ptp_domain() ||
-          config_->get_ptp_dscp() != config.get_ptp_dscp()) {
-        PTPConfig ptpConfig{config.get_ptp_domain(), config.get_ptp_dscp()};
-        ret = session_manager_->set_ptp_config(ptpConfig);
-      }
+      std::error_code ret = session_manager_->apply_config(config);
       if (ret) {
         set_error(ret, "failed to set config", res);
         return;
@@ -305,7 +297,8 @@ bool HttpServer::init() {
   /* add a sink */
   svr_.Put("/api/sink/([0-9]+)", [this](const Request& req, Response& res) {
     try {
-      StreamSink sink = json_to_sink(req.matches[1], req.body);
+      StreamSink sink = json_to_sink(req.matches[1], req.body,
+                                     config_->get_streamer_enabled());
       auto ret = session_manager_->add_sink(sink);
       if (ret) {
         set_error(ret, "failed to add sink " + std::to_string(sink.id), res);

@@ -43,8 +43,43 @@
 #include "rtsp_client.hpp"
 #include "utils.hpp"
 #include "session_manager.hpp"
+#include "MergingRAVENNACommon.h"  /* MAX_NUMBEROFINPUTS/OUTPUTS */
 #include "interface.hpp"
 
+
+/* Legacy single-card mode: the one implicit card, derived from the
+ * configuration at every start and never persisted. Its ALSA id is the one
+ * the single-card driver exposes (hw:RAVENNA), so existing client setups keep
+ * working; it lives on the configured PTP domain, at the configured sample
+ * rate, with the driver's maximum channel counts, and the configured safety
+ * playout delay. pcm_id 0 is what a stream without a pcm reference binds to. */
+namespace legacy {
+constexpr const char* kCardName = "RAVENNA";
+constexpr const char* kPcmName = "default";
+constexpr uint8_t kPcmId = 0;
+
+inline Card card(const Config& config) {
+  Card card;
+  card.handle = 0;
+  card.name = kCardName;
+  card.domain = config.get_ptp_domain();
+  card.rate_change_mode = "recreate";
+  return card;
+}
+
+inline Pcm pcm(const Config& config) {
+  Pcm pcm;
+  pcm.pcm_id = kPcmId;
+  pcm.card = kCardName;
+  pcm.name = kPcmName;
+  pcm.sample_rate = config.get_sample_rate();
+  pcm.num_inputs = MAX_NUMBEROFINPUTS;
+  pcm.num_outputs = MAX_NUMBEROFOUTPUTS;
+  pcm.playout_delay = static_cast<int32_t>(config.get_playout_delay());
+  pcm.capture_delay = 0;
+  return pcm;
+}
+}  // namespace legacy
 namespace {
 /* D4: observer notifications collected under a lock, fired after it is
  * released. Declare an instance BEFORE the unique_lock: destruction runs in
@@ -595,6 +630,9 @@ std::error_code SessionManager::bring_up_card_(const Card& card,
 }
 
 std::error_code SessionManager::add_card(const Card& spec) {
+  if (!managed_cards()) {
+    return DaemonErrc::cards_not_managed;
+  }
   Card card = spec;
   std::unique_lock cards_lock(cards_mutex_);
   /* the name is the card's durable identity (REST addresses cards by name, and
@@ -649,6 +687,9 @@ std::error_code SessionManager::add_card(const Card& spec) {
 }
 
 std::error_code SessionManager::remove_card(uint8_t handle) {
+  if (!managed_cards()) {
+    return DaemonErrc::cards_not_managed;
+  }
   std::string card_name;
   std::set<uint8_t> pcm_ids;
   {
@@ -840,6 +881,9 @@ std::error_code SessionManager::recreate_card_(const std::string& card_name,
 
 std::error_code SessionManager::add_pcm(const std::string& card_name,
                                         const Pcm& spec) {
+  if (!managed_cards()) {
+    return DaemonErrc::cards_not_managed;
+  }
   Pcm pcm = spec;
   pcm.card = card_name;
   std::list<Pcm> new_pcms;
@@ -894,6 +938,9 @@ std::error_code SessionManager::add_pcm(const std::string& card_name,
 
 std::error_code SessionManager::remove_pcm(const std::string& card_name,
                                            const std::string& pcm_name) {
+  if (!managed_cards()) {
+    return DaemonErrc::cards_not_managed;
+  }
   std::list<Pcm> new_pcms;
   bool found = false;
   {
@@ -921,6 +968,9 @@ std::error_code SessionManager::remove_pcm(const std::string& card_name,
 std::error_code SessionManager::update_pcm(const std::string& card_name,
                                            const std::string& pcm_name,
                                            const Pcm& new_params) {
+  if (!managed_cards()) {
+    return DaemonErrc::cards_not_managed;
+  }
   std::list<Pcm> new_pcms;
   bool found = false;
   /* new_params.name (if non-empty) renames the pcm; empty keeps it. The rename
@@ -975,6 +1025,9 @@ std::error_code SessionManager::update_card(const std::string& name,
                                             const std::string& new_name,
                                             uint8_t new_domain,
                                             const std::string& new_mode) {
+  if (!managed_cards()) {
+    return DaemonErrc::cards_not_managed;
+  }
   /* card-level edit: rename, re-domain, and/or change the rate-change mode.
    * Recreates the card under the new identity, keeping its pcm set (pcm_ids
    * preserved) and re-establishing bound streams. NB: renaming changes the
@@ -1201,11 +1254,30 @@ bool SessionManager::load_status() {
     }
   }
 
-  /* W10.2: the SessionManager owns the card+pcm topology, brought up from
-   * status.json. Cards must come up BEFORE sources/sinks, which reference their
-   * pcms by pcm_id. A card with no pcms is brought up empty. First boot (no
-   * status.json) simply has no cards — create them at runtime via REST/WebUI;
-   * there is no daemon.conf seeding anymore. */
+  /* Legacy single-card mode: the topology is the implicit card derived from
+   * the configuration, whatever the status file holds (an upstream-format file
+   * has no cards; a managed-mode file's cards are ignored and reported). */
+  if (!managed_cards()) {
+    if (!cards_list.empty() || !pcms_list.empty()) {
+      BOOST_LOG_TRIVIAL(warning)
+          << "session_manager:: ignoring " << cards_list.size()
+          << " persisted card(s) and " << pcms_list.size()
+          << " pcm(s): managed_cards is false (legacy single-card mode)";
+    }
+    cards_list = {legacy::card(*config_)};
+    pcms_list = {legacy::pcm(*config_)};
+    BOOST_LOG_TRIVIAL(info)
+        << "session_manager:: legacy single-card mode: card \""
+        << legacy::kCardName << "\" on PTP domain "
+        << (int)config_->get_ptp_domain() << " at "
+        << config_->get_sample_rate() << " Hz";
+  }
+
+  /* The SessionManager owns the card+pcm topology, brought up from the status
+   * file (managed mode) or derived from the configuration (legacy mode). Cards
+   * must come up BEFORE sources/sinks, which reference their pcms by pcm_id. A
+   * card with no pcms is brought up empty. In managed mode a first boot (no
+   * status file) has no cards — create them at runtime via REST/WebUI. */
   {
     std::unique_lock cards_lock(cards_mutex_);
     for (const auto& card : cards_list) {
@@ -1293,8 +1365,11 @@ bool SessionManager::save_status() const {
           << "session_manager:: cannot write status tmp file " << tmp_path;
       return false;
     }
-    jsonstream << status_to_json(get_cards(), get_pcms(), get_sources(),
-                                 get_sinks());
+    /* legacy single-card mode: the implicit card is derived, never persisted,
+     * so the status file keeps the single-card format. */
+    jsonstream << status_to_json(managed_cards() ? get_cards() : std::list<Card>{},
+                                 managed_cards() ? get_pcms() : std::list<Pcm>{},
+                                 get_sources(), get_sinks());
     jsonstream.close();
     if (!jsonstream) {
       BOOST_LOG_TRIVIAL(fatal)
@@ -1892,10 +1967,12 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
       }
       channel_used[ch] = true;
     }
-    /* Reject overlap with any OTHER sink on the same PCM: two sinks
-     * deinterleaving into the same physical channel is uncoordinated
-     * last-writer-wins in the kernel ring — the 2026-06-04 "constant
-     * crackle" (or silent channels when one sender is idle). */
+    /* Overlap with any OTHER sink on the same PCM: two sinks deinterleaving
+     * into the same physical channel is uncoordinated last-writer-wins in the
+     * kernel ring (constant crackle, or silent channels when one sender is
+     * idle). Managed mode rejects it. Legacy single-card mode keeps the
+     * permissive behaviour the single-card daemon always had (existing setups
+     * commonly leave every sink on the default channels) and warns instead. */
     std::shared_lock sinks_lock(sinks_mutex_);
     for (const auto& [id, other] : sinks_) {
       if (id == sink.id)  // a PUT replaces this sink; don't self-collide
@@ -1905,12 +1982,20 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
       for (uint8_t ch = 0; ch < other.stream[0].m_byNbOfChannels; ++ch) {
         auto phys = other.stream[0].m_aui32Routing[ch];
         if (phys < 256 && channel_used[phys]) {
-          BOOST_LOG_TRIVIAL(error)
+          if (managed_cards()) {
+            BOOST_LOG_TRIVIAL(error)
+                << "session_manager:: sink " << std::to_string(sink.id)
+                << " physical channel " << phys << " on PCM "
+                << std::to_string(sink.pcm) << " is already mapped by sink "
+                << std::to_string(id);
+            return DaemonErrc::channel_map_overlap;
+          }
+          BOOST_LOG_TRIVIAL(warning)
               << "session_manager:: sink " << std::to_string(sink.id)
-              << " physical channel " << phys << " on PCM "
-              << std::to_string(sink.pcm) << " is already mapped by sink "
-              << std::to_string(id);
-          return DaemonErrc::channel_map_overlap;
+              << " physical channel " << phys << " is also mapped by sink "
+              << std::to_string(id)
+              << ": overlapping sinks corrupt that channel (allowed in "
+                 "legacy single-card mode)";
         }
       }
     }
@@ -2273,6 +2358,40 @@ std::error_code SessionManager::set_ptp_config(const PTPConfig& config) {
     ptp_config_ = config;
   }
   return ret;
+}
+
+std::error_code SessionManager::apply_config(const Config& next) {
+  if (config_->get_ptp_domain() != next.get_ptp_domain() ||
+      config_->get_ptp_dscp() != next.get_ptp_dscp()) {
+    PTPConfig ptp_config{next.get_ptp_domain(), next.get_ptp_dscp()};
+    if (auto ec = set_ptp_config(ptp_config)) {
+      return ec;
+    }
+  }
+  if (managed_cards()) {
+    return std::error_code{};
+  }
+  /* legacy single-card mode: the implicit card follows the configuration. A
+   * new sample rate or domain rebuilds it (streams re-bound, as any card
+   * recreate); a new playout delay is set in place. */
+  const bool rebuild = config_->get_sample_rate() != next.get_sample_rate() ||
+                       config_->get_ptp_domain() != next.get_ptp_domain();
+  if (rebuild) {
+    return recreate_card_(legacy::kCardName, {legacy::pcm(next)}, "",
+                          next.get_ptp_domain(), "");
+  }
+  if (config_->get_playout_delay() != next.get_playout_delay()) {
+    const Pcm pcm = legacy::pcm(next);
+    if (auto ec = driver_->set_playout_delay(pcm.pcm_id, pcm.playout_delay)) {
+      return ec;
+    }
+    std::unique_lock cards_lock(cards_mutex_);
+    auto it = pcms_.find(pcm.pcm_id);
+    if (it != pcms_.end()) {
+      it->second.playout_delay = pcm.playout_delay;
+    }
+  }
+  return std::error_code{};
 }
 
 void SessionManager::get_ptp_config(PTPConfig& config) const {

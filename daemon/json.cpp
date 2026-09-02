@@ -83,8 +83,10 @@ std::string config_to_json(const Config& config) {
      << ",\n  \"rtsp_port\": " << config.get_rtsp_port()
      << ",\n  \"http_base_dir\": \"" << config.get_http_base_dir() << "\""
      << ",\n  \"log_severity\": " << config.get_log_severity()
+     << ",\n  \"playout_delay\": " << config.get_playout_delay()
      << ",\n  \"tic_frame_size_at_1fs\": " << config.get_tic_frame_size_at_1fs()
      << ",\n  \"max_tic_frame_size\": " << config.get_max_tic_frame_size()
+     << ",\n  \"sample_rate\": " << config.get_sample_rate()
      << ",\n  \"rtp_mcast_base\": \""
      << escape_json(config.get_rtp_mcast_base()) << "\""
      << ",\n  \"rtp_mcast_base_sec\": \""
@@ -110,7 +112,8 @@ std::string config_to_json(const Config& config) {
      << escape_json(config.get_ptp_status_script()) << "\""
      << ",\n  \"mac_addr\": \"" << escape_json(config.get_mac_addr_str())
      << "\"" << ",\n  \"ip_addr\": \"" << escape_json(config.get_ip_addr_str())
-     << "\"" << ",\n  \"streamer_channels\": "
+     << "\"" << ",\n  \"streamer_enabled\": " << std::boolalpha
+     << config.get_streamer_enabled() << ",\n  \"streamer_channels\": "
      << unsigned(config.get_streamer_channels())
      << ",\n  \"streamer_files_num\": "
      << unsigned(config.get_streamer_files_num())
@@ -120,6 +123,8 @@ std::string config_to_json(const Config& config) {
      << unsigned(config.get_streamer_player_buffer_files_num())
      << ",\n  \"auto_sinks_update\": " << std::boolalpha
      << config.get_auto_sinks_update()
+     << ",\n  \"managed_cards\": " << std::boolalpha
+     << config.get_managed_cards()
      << ",\n  \"nmos_enabled\": " << std::boolalpha << config.get_nmos_enabled()
      << ",\n  \"nmos_registry_address\": \""
      << escape_json(config.get_nmos_registry_address()) << "\""
@@ -500,6 +505,14 @@ Config json_to_config_(std::istream& js, Config& config) {
       } else if (key == "http_base_dir") {
         config.set_http_base_dir(
             remove_undesired_chars(val.get_value<std::string>()));
+      } else if (key == "managed_cards") {
+        config.set_managed_cards(val.get_value<bool>());
+      } else if (key == "sample_rate") {
+        config.set_sample_rate(val.get_value<uint32_t>());
+      } else if (key == "playout_delay") {
+        config.set_playout_delay(val.get_value<uint32_t>());
+      } else if (key == "streamer_enabled") {
+        config.set_streamer_enabled(val.get_value<bool>());
       } else if (key == "streamer_channels") {
         config.set_streamer_channels(val.get_value<uint8_t>());
       } else if (key == "streamer_files_num") {
@@ -743,7 +756,8 @@ StreamSource json_to_source(const std::string& id, const std::string& json) {
   return source;
 }
 
-StreamSink json_to_sink(const std::string& id, const std::string& json) {
+StreamSink json_to_sink(const std::string& id, const std::string& json,
+                        bool stream_default) {
   /* JSON request
     "name": "ALSA (on ubuntu)_1",
     "io": "Audio Device",
@@ -775,8 +789,9 @@ StreamSink json_to_sink(const std::string& id, const std::string& json) {
     sink.ignore_refclk_gmid = pt.get<bool>("ignore_refclk_gmid");
     /* multi-rate Stage 1: optional, defaults to PCM 0 for back-compat. */
     sink.pcm = pt.get<uint8_t>("pcm", 0);
-    /* lean streamer: optional opt-in, defaults to false. */
-    sink.stream = pt.get<bool>("stream", false);
+    /* per-sink streaming opt-in; a request that omits it gets the
+     * configuration's streamer_enabled as its default. */
+    sink.stream = pt.get<bool>("stream", stream_default);
     /* source map determite the association with
        ALSA input channels used to recording */
     BOOST_FOREACH (boost::property_tree::ptree::value_type& v,

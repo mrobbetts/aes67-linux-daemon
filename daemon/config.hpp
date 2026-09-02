@@ -86,6 +86,18 @@ class Config {
   uint8_t get_streamer_channels() const { return streamer_channels_; };
   int get_log_severity() const { return log_severity_; };
   uint32_t get_tic_frame_size_at_1fs() const { return tic_frame_size_at_1fs_; };
+  /* Card topology mode. false (the default): legacy single-card mode. One
+   * implicit card is derived from this configuration at every start
+   * (sample_rate, playout_delay, ptp_domain), it is never persisted, and the
+   * card/pcm management endpoints refuse writes. true: cards and pcms are
+   * managed through the REST API / WebUI and persisted in the status file. */
+  bool get_managed_cards() const { return managed_cards_; };
+  /* The implicit card's sample rate and safety playout delay (legacy
+   * single-card mode); in managed mode every pcm carries its own. */
+  uint32_t get_sample_rate() const { return sample_rate_; };
+  uint32_t get_playout_delay() const { return playout_delay_; };
+  /* Default for a sink's per-sink `stream` flag when a request omits it. */
+  bool get_streamer_enabled() const { return streamer_enabled_; };
   uint32_t get_max_tic_frame_size() const { return max_tic_frame_size_; };
   const std::string& get_rtp_mcast_base() const { return rtp_mcast_base_; };
   const std::string& get_rtp_mcast_base_sec() const {
@@ -150,6 +162,14 @@ class Config {
     streamer_player_buffer_files_num_ = streamer_player_buffer_files_num;
   };
   void set_log_severity(int log_severity) { log_severity_ = log_severity; };
+  void set_managed_cards(bool managed_cards) { managed_cards_ = managed_cards; };
+  void set_sample_rate(uint32_t sample_rate) { sample_rate_ = sample_rate; };
+  void set_playout_delay(uint32_t playout_delay) {
+    playout_delay_ = playout_delay;
+  };
+  void set_streamer_enabled(bool streamer_enabled) {
+    streamer_enabled_ = streamer_enabled;
+  };
   void set_tic_frame_size_at_1fs(uint32_t tic_frame_size_at_1fs) {
     tic_frame_size_at_1fs_ = tic_frame_size_at_1fs;
   };
@@ -243,7 +263,11 @@ class Config {
            lhs.get_nmos_registry_address() != rhs.get_nmos_registry_address() ||
            lhs.get_nmos_registry_port() != rhs.get_nmos_registry_port() ||
            lhs.get_nmos_node_port() != rhs.get_nmos_node_port() ||
-           lhs.get_nmos_label() != rhs.get_nmos_label();
+           lhs.get_nmos_label() != rhs.get_nmos_label() ||
+           lhs.get_managed_cards() != rhs.get_managed_cards() ||
+           lhs.get_sample_rate() != rhs.get_sample_rate() ||
+           lhs.get_playout_delay() != rhs.get_playout_delay() ||
+           lhs.get_streamer_enabled() != rhs.get_streamer_enabled();
   };
   friend bool operator==(const Config& lhs, const Config& rhs) {
     return !(lhs != rhs);
@@ -261,6 +285,10 @@ class Config {
   uint8_t streamer_player_buffer_files_num_{1};
   int log_severity_{2};
   uint32_t tic_frame_size_at_1fs_{48};
+  bool managed_cards_{false};
+  uint32_t sample_rate_{48000};
+  uint32_t playout_delay_{0};
+  bool streamer_enabled_{false};
   uint32_t max_tic_frame_size_{1024};
   std::string rtp_mcast_base_{"239.1.0.1"};
   std::string rtp_mcast_base_sec_{"239.1.0.1"};

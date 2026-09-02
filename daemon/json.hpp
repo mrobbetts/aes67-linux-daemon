@@ -68,7 +68,8 @@ Config json_to_config(std::istream& jstream);
 Config json_to_config(const std::string& json, const Config& curConfig);
 Config json_to_config(const std::string& json);
 StreamSource json_to_source(const std::string& id, const std::string& json);
-StreamSink json_to_sink(const std::string& id, const std::string& json);
+StreamSink json_to_sink(const std::string& id, const std::string& json,
+                        bool stream_default = false);
 Card json_to_card(const std::string& json);
 Pcm json_to_pcm(const std::string& json);
 PTPConfig json_to_ptp_config(const std::string& json);

@@ -455,6 +455,8 @@ BOOST_AUTO_TEST_CASE(get_config) {
   auto ip_addr = pt.get<std::string>("ip_addr");
   auto auto_sinks_update = pt.get<bool>("auto_sinks_update");
   auto mdns_enabled = pt.get<bool>("mdns_enabled");
+  auto streamer_enabled = pt.get<bool>("streamer_enabled");
+  auto managed_cards = pt.get<bool>("managed_cards");
   auto streamer_channels = pt.get<int>("streamer_channels");
   auto streamer_files_num = pt.get<int>("streamer_files_num");
   auto streamer_file_duration = pt.get<int>("streamer_file_duration");
@@ -471,6 +473,8 @@ BOOST_AUTO_TEST_CASE(get_config) {
   BOOST_CHECK_MESSAGE(tic_frame_size_at_1fs == 192, "config as excepcted");
   BOOST_CHECK_MESSAGE(max_tic_frame_size == 1024, "config as excepcted");
   BOOST_CHECK_MESSAGE(sample_rate == 44100, "config as excepcted");
+  BOOST_CHECK_MESSAGE(streamer_enabled == false, "config as excepcted");
+  BOOST_CHECK_MESSAGE(managed_cards == false, "config as excepcted");
   BOOST_CHECK_MESSAGE(rtp_mcast_base == "239.1.0.1", "config as excepcted");
   BOOST_CHECK_MESSAGE(rtp_mcast_base_sec == "239.1.1.1", "config as excepcted");
   BOOST_CHECK_MESSAGE(rtp_port == 6004, "config as excepcted");

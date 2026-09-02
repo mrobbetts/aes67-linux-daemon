@@ -196,6 +196,7 @@ Example
       "http_port": 8080,
       "rtsp_port": 8854,
       "log_severity": 2,
+      "playout_delay": 0,
       "syslog_proto": "none",
       "syslog_server": "255.255.255.254:1234",
       "rtp_mcast_base": "239.2.0.1",
@@ -209,6 +210,7 @@ Example
       "frame_size_at_1fs": 192,
       "sample_rate": 44100,
       "max_tic_frame_size": 1024,
+      "sample_rate": 48000,
       "sap_mcast_addr": "239.255.255.255",
       "sap_interval": 30,
       "mac_addr": "01:00:5e:01:00:01",
@@ -217,6 +219,8 @@ Example
       "custom_node_id": "",
       "ptp_status_script": "./scripts/ptp_status.sh",
       "auto_sinks_update": true,
+      "managed_cards": false,
+      "streamer_enabled": false,
       "streamer_channels": 8,
       "streamer_files_num": 6,
       "streamer_file_duration": 1,
@@ -288,6 +292,12 @@ where:
 > **playout\_delay**
 > JSON number specifying the default safety playout delay at 1FS in samples.
 
+> **playout\_delay**
+> JSON number specifying the safety playout delay in samples applied to the implicit card in legacy single-card mode (see *managed\_cards*). Ignored in managed mode, where every PCM device carries its own delay.
+
+> **sample\_rate**
+> JSON number specifying the sample rate of the implicit card in legacy single-card mode (see *managed\_cards*). Ignored in managed mode, where every PCM device carries its own rate.
+
 > **tic\_frame\_size\_at\_1fs**
 > JSON number specifying the TIC frame size at 1FS in samples, valid range is from 32 to 192 samples.
 > This global setting is used to determine the driver base timer period. For example with a value of 192 samples this period is set to 4ms and the outgoing RTP packets are scheduled for being sent every 4ms resulting on an average latency greater than 4ms.
@@ -332,6 +342,12 @@ where:
 > The PTP clock status is passed as first parameter to the script and it can be *unlocked*, *locking* or *locked*.
 
 > The HTTP Streamer is enabled per-Sink via the Sink's *stream* boolean flag (there is no daemon-wide enable toggle). The streamer captures the PCM of the lowest-id streamed Sink (one capture context at a time), splits it into *streamer_files_num* files of *streamer_file_duration* each, and serves them via HTTP. The captured rate and channel count follow that Sink's PCM.
+
+> **streamer\_enabled**
+> JSON boolean specifying the default of a Sink's *stream* flag when a Sink is added without one. Streaming is per Sink: only Sinks whose *stream* flag is true are AAC-encoded and served over HTTP.
+
+> **managed\_cards**
+> JSON boolean selecting the card topology mode. When false (the default) the daemon runs in legacy single-card mode: a single ALSA card *RAVENNA* with one PCM device is derived from this configuration at every start (*sample\_rate*, *playout\_delay*, *ptp\_domain*), it is never written to the status file, Sources and Sinks bind to it implicitly, and the card and PCM management endpoints refuse writes. When true, cards and their PCM devices are created and edited through the REST API or the WebUI Cards tab, each PCM device with its own sample rate, channel counts, delays and PTP domain, and they are persisted in the status file.
 
 > **streamer\_channels**
 > JSON number specifying the number of channels captured by the HTTP Streamer starting from channel 0, 8 by default.
