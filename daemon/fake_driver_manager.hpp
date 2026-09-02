@@ -26,6 +26,7 @@
 #include "error_code.hpp"
 #include "RTP_stream_info.h"
 #include "audio_streamer_clock_PTP_defs.h"
+#include "MT_ALSA_message_defs.h"
 
 class DriverManager {
  public:
