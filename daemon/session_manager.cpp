@@ -1336,11 +1336,22 @@ bool SessionManager::load_status() {
     }
   }
 
+  /* A persisted stream the validation now refuses (for a sink, typically a
+   * channel map overlapping another sink's) is dropped here and reported,
+   * so the operator sees exactly what to fix. */
   for (auto const& source : sources_list) {
-    add_source(source);
+    if (auto ec = add_source(source)) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: load_status: source " << (int)source.id
+          << " (\"" << source.name << "\") not restored: " << ec.message();
+    }
   }
   for (auto const& sink : sinks_list) {
-    add_sink(sink);
+    if (auto ec = add_sink(sink)) {
+      BOOST_LOG_TRIVIAL(error)
+          << "session_manager:: load_status: sink " << (int)sink.id << " (\""
+          << sink.name << "\") not restored: " << ec.message();
+    }
   }
 
   return true;
@@ -1967,12 +1978,13 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
       }
       channel_used[ch] = true;
     }
-    /* Overlap with any OTHER sink on the same PCM: two sinks deinterleaving
-     * into the same physical channel is uncoordinated last-writer-wins in the
-     * kernel ring (constant crackle, or silent channels when one sender is
-     * idle). Managed mode rejects it. Legacy single-card mode keeps the
-     * permissive behaviour the single-card daemon always had (existing setups
-     * commonly leave every sink on the default channels) and warns instead. */
+    /* Reject overlap with any OTHER sink on the same PCM. Each sink channel is
+     * bound to the ring buffer of its physical channel with no arbitration in
+     * the kernel: two sinks on one channel write their packets into the same
+     * buffer, last writer wins per packet, and the channel plays garbage while
+     * both send (and plays whichever sender is active while the other is
+     * idle). No configuration of that shape can produce correct audio, so it
+     * is an error in every mode. */
     std::shared_lock sinks_lock(sinks_mutex_);
     for (const auto& [id, other] : sinks_) {
       if (id == sink.id)  // a PUT replaces this sink; don't self-collide
@@ -1982,20 +1994,12 @@ std::error_code SessionManager::add_sink(const StreamSink& sink) {
       for (uint8_t ch = 0; ch < other.stream[0].m_byNbOfChannels; ++ch) {
         auto phys = other.stream[0].m_aui32Routing[ch];
         if (phys < 256 && channel_used[phys]) {
-          if (managed_cards()) {
-            BOOST_LOG_TRIVIAL(error)
-                << "session_manager:: sink " << std::to_string(sink.id)
-                << " physical channel " << phys << " on PCM "
-                << std::to_string(sink.pcm) << " is already mapped by sink "
-                << std::to_string(id);
-            return DaemonErrc::channel_map_overlap;
-          }
-          BOOST_LOG_TRIVIAL(warning)
+          BOOST_LOG_TRIVIAL(error)
               << "session_manager:: sink " << std::to_string(sink.id)
-              << " physical channel " << phys << " is also mapped by sink "
-              << std::to_string(id)
-              << ": overlapping sinks corrupt that channel (allowed in "
-                 "legacy single-card mode)";
+              << " physical channel " << phys << " on PCM "
+              << std::to_string(sink.pcm) << " is already mapped by sink "
+              << std::to_string(id);
+          return DaemonErrc::channel_map_overlap;
         }
       }
     }

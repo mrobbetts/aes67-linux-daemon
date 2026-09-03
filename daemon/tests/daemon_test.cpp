@@ -259,10 +259,11 @@ struct Client {
   "sdp": "v=0\no=- 1 0 IN IP4 10.0.0.12\ns=ALSA (on ubuntu)_1\nc=IN IP4 239.2.0.12/15\nt=0 0\na=clock-domain:PTPv2 0\nm=audio 6004 RTP/AVP 98\nc=IN IP4 239.2.0.12/15\na=rtpmap:98 L16/44100/2\na=sync-time:0\na=framecount:64-192\na=ptime:1.088435374150\na=maxptime:1.088435374150\na=mediaclk:direct=0\na=ts-refclk:ptp=IEEE1588-2008:00-0C-29-FF-FE-0E-90-C8:0\na=recvonly",
   "delay": 1024,
   "ignore_refclk_gmid": true,
-  "map": [ 0, 1 ]
+  "map": [ MAP ]
 }
   )";
 
+    boost::replace_first(json, "MAP", std::to_string(2 * id) + ", " + std::to_string(2 * id + 1));  /* distinct channels per sink: overlapping sink maps are rejected */
     boost::replace_first(json, "ALSA", "ALSA " + std::to_string(id));
     std::string url = std::string("/api/sink/") + std::to_string(id);
     auto res = cli_.Put(url.c_str(), json, "application/json");
@@ -278,9 +279,10 @@ struct Client {
   "sdp": "",
   "delay": 1024,
   "ignore_refclk_gmid": true,
-  "map": [ 0, 1 ],
+  "map": [ MAP ],
   )";
 
+    boost::replace_first(json1, "MAP", std::to_string(2 * id) + ", " + std::to_string(2 * id + 1));  /* distinct channels per sink: overlapping sink maps are rejected */
     std::string json =
         json1 +
         std::string("\"name\": \"ALSA " + std::to_string(id) + "\",\n") +
